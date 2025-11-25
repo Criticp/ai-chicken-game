@@ -1,0 +1,33 @@
+{
+    "egg_diff": 10.0,
+    "mobility": 0.8,
+    "corner_proximity": 0.5,
+    "turd_diff": 0.6,
+    "trapdoor_risk": -20.0,
+    "turd_chokepoint_mobility_reduction": 5.0,
+    "turd_adjacent_trapdoor": 3.0,
+    "corner_control": 0.7,
+    "chokepoint_potential": 2.5,
+    "enemy_mobility_penalty": -0.4,
+    "safe_zone_bonus": 0.3,
+    "max_risk_tolerance": 0.18,
+    "metadata": {
+        "version": "v4_predator",
+        "distillation_method": "distillation_2.0",
+        "training_samples": 50000,
+        "features": [
+            "egg_diff",
+            "mobility",
+            "corner_proximity",
+            "turd_diff",
+            "trapdoor_risk",
+            "turd_chokepoint",
+            "turd_adjacent_trapdoor",
+            "corner_control",
+            "chokepoint_potential",
+            "enemy_mobility",
+            "safe_zone"
+        ],
+        "notes": "Weights refined via Distillation 2.0 - Teacher NN trained on tactical board states"
+    }
+}
