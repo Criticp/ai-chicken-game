@@ -469,7 +469,6 @@ def distill_to_linear_weights(
     
     # Linear regression to find weights
     if NUMPY_AVAILABLE:
-        import numpy as np
         X = np.array(features_list)
         y = np.array(predictions)
         

@@ -107,13 +107,13 @@ class TrapdoorBelief:
                 if (death_loc[0] + death_loc[1]) % 2 == 0:
                     self.even_probs[death_loc] = 1.0
                     # Normalize other cells to 0 for this trapdoor
-                    for cell in self.even_probs:
+                    for cell in list(self.even_probs.keys()):
                         if cell != death_loc:
                             self.even_probs[cell] = 0.0
                 else:
                     self.odd_probs[death_loc] = 1.0
                     # Normalize other cells to 0 for this trapdoor
-                    for cell in self.odd_probs:
+                    for cell in list(self.odd_probs.keys()):
                         if cell != death_loc:
                             self.odd_probs[cell] = 0.0
                 
@@ -319,8 +319,8 @@ class TrapdoorBelief:
         # Update probability grid
         x, y = position
         if (x + y) % 2 == 0:
-            for cell in self.even_probs:
+            for cell in list(self.even_probs.keys()):
                 self.even_probs[cell] = 1.0 if cell == position else 0.0
         else:
-            for cell in self.odd_probs:
+            for cell in list(self.odd_probs.keys()):
                 self.odd_probs[cell] = 1.0 if cell == position else 0.0
