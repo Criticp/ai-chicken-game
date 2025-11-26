@@ -168,7 +168,7 @@ class NeuralEvaluator:
 
         # REMOVED: Tactical suicide (incompatible with zero-tolerance safety)
 
-        # Enhanced fallback weights (Defense & Zoning Specialist + FINAL POLISH)
+        # Enhanced fallback weights (Defense & Zoning + DeepChicken + PROJECT VANGUARD)
         self.fallback_weights = {
             'egg_diff': 7.6488,
             'mobility': 0.1693,
@@ -176,7 +176,7 @@ class NeuralEvaluator:
             'turd_diff': 0.3354,
 
             # ZERO-TOLERANCE: Massive penalty for ANY trap risk
-            'trapdoor_risk': -100.0,  # Was -20, now -100 (Lava Floor!)
+            'trapdoor_risk': -100.0,
 
             # Territory control (with weaponized geography)
             'territory_control': 1.0,
@@ -188,19 +188,28 @@ class NeuralEvaluator:
             'turd_aggression': 5.0,
 
             # FINAL POLISH: The "Great Wall" - turd cut value
-            'turd_cut_weight': 8.0,  # NEW: Rewards turds that slice enemy territory
+            'turd_cut_weight': 8.0,
+
+            # DEEPCHICKEN: Turd Warfare - Zone of Denial impact
+            'turd_killer': 10.0,
 
             # THE PRESS: Safe mobility differential
             'safe_mobility_press': 3.0,
 
             # FINAL POLISH: The Breadcrumb Trail - repetition penalty
-            'repetition_penalty': -50.0,  # NEW: -50 per visit to recent position
+            'repetition_penalty': -50.0,
 
             # Egg walk tax (walking on own eggs)
-            'egg_walk_penalty': -0.5,  # NEW: Small penalty for stepping on own eggs
+            'egg_walk_penalty': -0.5,
+
+            # PROJECT VANGUARD: Aggression & Corner Hunting
+            'invasion_weight': 1.5,      # NEW: Forward progress into enemy territory
+            'egg_hunter_weight': 2.0,    # NEW: Attraction to enemy egg clusters
+            'corner_gravity': 3.5,       # NEW: Corner proximity gradient (was 2.5)
 
             'intercept': -0.0055,
         }
+
 
         self.model_loaded = False
 
@@ -454,11 +463,27 @@ class NeuralEvaluator:
 
         # ═══════════════════════════════════════════════════════════════
         # FINAL POLISH: Egg Walk Tax
-        # ═══════════════════════════════════════════════════════════════
+        # ══════════════════════════════════���════════════════════════════
 
         # Penalize walking on own eggs (wastes a turn unless high territory gain)
         if my_loc in board.eggs_player:
             score += self.fallback_weights['egg_walk_penalty']
+
+        # ═══════════════════════════════════════════════════════════════
+        # PROJECT VANGUARD: Aggression & Corner Hunting
+        # ═══════════════════════════════════════════════════════════════
+
+        # Phase 1: The "Invasion" Bias (Crossing the Rubicon)
+        invasion_score = self._calculate_invasion_score(board, my_loc)
+        score += invasion_score * self.fallback_weights['invasion_weight']
+
+        # Phase 1.2: The "Egg Hunter" Logic
+        hunter_score = self._calculate_egg_hunter_score(board, my_loc, enemy_loc)
+        score += hunter_score * self.fallback_weights['egg_hunter_weight']
+
+        # Phase 2: The "Corner King" Module (Enhanced gravity well)
+        corner_score = self._calculate_corner_gravity(board, my_loc)
+        score += corner_score * self.fallback_weights['corner_gravity']
 
         # Intercept
         score += self.fallback_weights['intercept']
@@ -469,7 +494,7 @@ class NeuralEvaluator:
 
         if board.can_lay_egg():
             if self._is_corner(my_loc):
-                score += 25.0  # Corner egg = 4 eggs
+                score += 25.0  # Corner egg = 4 eggs (3x bonus)
             else:
                 score += 6.0
 
@@ -544,6 +569,111 @@ class NeuralEvaluator:
         except Exception:
             # Fallback if simulation fails
             return 0.0
+
+    def _calculate_invasion_score(self, board: "game_board.Board", my_loc: Tuple[int, int]) -> float:
+        """
+        PROJECT VANGUARD - Phase 1: The "Invasion" Bias
+
+        Directive 1.1: Forward progress into enemy territory
+        Rewards moving away from spawn toward enemy concentration
+
+        Returns:
+            Invasion score based on distance from spawn axis
+        """
+        # Get spawn position (edge of board)
+        my_spawn = self._get_spawn_position(board)
+
+        # Calculate distance from spawn (Manhattan distance)
+        spawn_dist = abs(my_loc[0] - my_spawn[0]) + abs(my_loc[1] - my_spawn[1])
+
+        # Normalize to 0-10 range
+        invasion_score = min(spawn_dist, 10)
+
+        return float(invasion_score)
+
+    def _calculate_egg_hunter_score(self, board: "game_board.Board",
+                                    my_loc: Tuple[int, int],
+                                    enemy_loc: Tuple[int, int]) -> float:
+        """
+        PROJECT VANGUARD - Phase 1.2: The "Egg Hunter" Logic
+
+        Directive 1.2: Attraction to enemy egg clusters
+        Calculates centroid of enemy eggs and rewards proximity
+
+        Returns:
+            Hunter score based on distance to enemy egg cluster
+        """
+        enemy_eggs = list(board.eggs_enemy)
+
+        if not enemy_eggs:
+            # No enemy eggs yet, track enemy chicken instead
+            centroid_x, centroid_y = enemy_loc
+        else:
+            # Calculate centroid of enemy eggs
+            centroid_x = sum(x for x, y in enemy_eggs) / len(enemy_eggs)
+            centroid_y = sum(y for x, y in enemy_eggs) / len(enemy_eggs)
+
+        # Manhattan distance to centroid
+        dist_to_cluster = abs(my_loc[0] - centroid_x) + abs(my_loc[1] - centroid_y)
+
+        # Invert: closer = higher score (max 10)
+        hunter_score = max(0, 10 - dist_to_cluster)
+
+        return float(hunter_score)
+
+    def _calculate_corner_gravity(self, board: "game_board.Board", my_loc: Tuple[int, int]) -> float:
+        """
+        PROJECT VANGUARD - Phase 2: The "Corner King" Module
+
+        Directive 2.1: Corner Proximity Gradient
+        Creates gravity well around corners (worth 3x eggs)
+        Guides agent toward corners even from distance
+
+        Returns:
+            Corner gravity score (higher when closer to valid corner)
+        """
+        corners = [(0, 0), (0, 7), (7, 0), (7, 7)]
+
+        # Find nearest corner that doesn't have an egg yet
+        min_dist = float('inf')
+        for corner in corners:
+            # Skip if corner already has an egg
+            if corner in board.eggs_player or corner in board.eggs_enemy:
+                continue
+
+            # Calculate distance
+            dist = abs(my_loc[0] - corner[0]) + abs(my_loc[1] - corner[1])
+            min_dist = min(min_dist, dist)
+
+        # If all corners occupied, use closest anyway
+        if min_dist == float('inf'):
+            min_dist = min(abs(my_loc[0] - c[0]) + abs(my_loc[1] - c[1]) for c in corners)
+
+        # Gravity score: 8 at corner, decreases with distance
+        gravity_score = max(0, 8 - min_dist)
+
+        return float(gravity_score)
+
+    def _get_spawn_position(self, board: "game_board.Board") -> Tuple[int, int]:
+        """Get estimated spawn position (usually on edge)"""
+        # Try to get from board/chicken
+        if hasattr(board.chicken_player, 'spawn'):
+            return board.chicken_player.spawn
+
+        # Fallback: estimate based on current position
+        # Spawns are typically on edges (x=0, x=7, y=0, y=7)
+        current = board.chicken_player.get_location()
+        x, y = current
+
+        # Estimate closest edge as spawn
+        if x < 4:
+            spawn_x = 0
+        else:
+            spawn_x = 7
+
+        spawn_y = y  # Usually similar y coordinate
+
+        return (spawn_x, spawn_y)
 
     def _corner_score(self, loc: Tuple[int, int]) -> float:
         """Corner proximity score"""
@@ -638,3 +768,35 @@ class HybridEvaluator:
 
         return score - penalty
 
+    def evaluate_turd_move(self, board: "game_board.Board", turd_loc: Tuple[int, int]) -> float:
+        """
+        DEEPCHICKEN: Evaluate turd move with conservation logic.
+
+        Directive 1.2 & 1.3: Conservation Threshold + Turd Killer Weight
+        - Calculates connectivity collapse impact
+        - Applies conservation threshold (< 8 = waste)
+        - Returns weighted score
+
+        Args:
+            board: Current board state
+            turd_loc: Proposed turd location
+
+        Returns:
+            Score adjustment for turd placement
+        """
+        # Check if territory evaluator available
+        if not hasattr(self.neural_eval, 'territory_evaluator') or not self.neural_eval.territory_evaluator:
+            # Fallback: use basic turd aggression
+            return 0.0
+
+        try:
+            # Calculate connectivity collapse using Zone of Denial
+            impact, weighted_score = self.neural_eval.territory_evaluator.evaluate_turd_with_conservation(
+                board, turd_loc
+            )
+
+            return weighted_score
+
+        except Exception:
+            # Fallback on error
+            return 0.0

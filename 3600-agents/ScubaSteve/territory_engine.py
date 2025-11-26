@@ -174,6 +174,118 @@ class TerritoryEvaluator:
 
         return choke_bonus
 
+    def calculate_turd_impact(self, board: "game_board.Board", turd_loc: Tuple[int, int]) -> int:
+        """
+        DEEPCHICKEN: Turd Warfare Module - Calculate connectivity collapse impact.
+
+        Directive 1.1 & 1.2: Zone of Denial Simulation
+        - A turd blocks 5 squares: center + 4 orthogonal neighbors
+        - Returns ΔArea = Current_Enemy_Reach - Simulated_Enemy_Reach
+
+        Conservation Threshold:
+        - Impact < 8: WASTE (don't place)
+        - Impact >= 8: STRATEGIC (major artery severed)
+        - Impact >= 15: PRIORITY ALPHA (game-winning cut)
+
+        Args:
+            board: Current board state
+            turd_loc: Location where turd would be placed
+
+        Returns:
+            Integer area reduction (enemy squares denied)
+        """
+        # Get current enemy reachable area
+        _, enemy_area_before, _ = self.evaluate_control(board)
+
+        # Simulate turd placement with ZONE OF DENIAL
+        zone_of_denial = self._get_zone_of_denial(turd_loc)
+
+        # Create simulated board state
+        simulated_turds = board.turds_player.copy()
+        simulated_turds.add(turd_loc)
+
+        # Temporarily modify board
+        original_turds = board.turds_player
+        board.turds_player = simulated_turds
+
+        # Get walls including Zone of Denial
+        my_eggs = set(board.eggs_player)
+        enemy_eggs = set(board.eggs_enemy)
+        enemy_turds = set(board.turds_enemy)
+        trap_walls = self._get_trap_walls() if self.tracker else set()
+
+        # CRITICAL: Zone of Denial blocks 5 squares for enemy
+        enemy_walls = my_eggs | simulated_turds | zone_of_denial | trap_walls
+
+        # Calculate enemy area AFTER turd
+        enemy_pos = board.chicken_enemy.get_location()
+        enemy_area_after = self._flood_fill_area(enemy_pos, enemy_walls, board)
+
+        # Restore original state
+        board.turds_player = original_turds
+
+        # Calculate impact (connectivity collapse)
+        turd_impact = enemy_area_before - enemy_area_after
+
+        return turd_impact
+
+    def _get_zone_of_denial(self, turd_loc: Tuple[int, int]) -> Set[Tuple[int, int]]:
+        """
+        DEEPCHICKEN: Zone of Denial - Turd blocks 5 squares.
+
+        Directive 1.1: Rulebook states turds block center + 4 neighbors.
+        This aligns with actual movement constraints.
+
+        Args:
+            turd_loc: Center of turd placement
+
+        Returns:
+            Set of 5 blocked squares (center + 4 neighbors)
+        """
+        tx, ty = turd_loc
+        zone = {turd_loc}  # Center square
+
+        # Add 4 orthogonal neighbors
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nx, ny = tx + dx, ty + dy
+            if 0 <= nx < self.board_size and 0 <= ny < self.board_size:
+                zone.add((nx, ny))
+
+        return zone
+
+    def evaluate_turd_with_conservation(self, board: "game_board.Board",
+                                       turd_loc: Tuple[int, int]) -> Tuple[int, float]:
+        """
+        DEEPCHICKEN: Turd Warfare with Conservation Logic.
+
+        Directive 1.2 & 1.3: Conservation Threshold + Efficiency Weight
+        - Calculates impact score
+        - Applies conservation threshold
+        - Returns impact and weighted score
+
+        Args:
+            board: Current board state
+            turd_loc: Proposed turd location
+
+        Returns:
+            (impact, score) tuple
+            - impact: Integer area reduction
+            - score: Weighted score (0 if waste, high if strategic)
+        """
+        # Calculate connectivity collapse
+        impact = self.calculate_turd_impact(board, turd_loc)
+
+        # Conservation Threshold (Directive 1.2)
+        if impact < 8:
+            # WASTE - penalize to prevent placement
+            return (impact, -100.0)  # Heavy penalty
+        elif impact >= 15:
+            # PRIORITY ALPHA - game-winning cut
+            return (impact, impact * 12.0)  # Maximum priority
+        else:  # 8 <= impact < 15
+            # STRATEGIC - major artery severed
+            return (impact, impact * 10.0)  # High priority (turd_killer weight)
+
 
 class TacticalSuicideEvaluator:
     """
@@ -319,4 +431,3 @@ def evaluate_with_territory(board: "game_board.Board") -> dict:
         'territory_score': territory_score,
         'control_ratio': control_ratio
     }
-
