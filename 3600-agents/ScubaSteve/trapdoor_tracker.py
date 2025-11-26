@@ -14,7 +14,15 @@ class TrapdoorTracker:
     """
     Bayesian inference engine for trapdoor location tracking.
     Maintains separate probability distributions for even and odd trapdoors.
+
+    DEFENSE & ZONING SPECIALIST:
+    "Lava Floor" Protocol - Zero-tolerance trapdoor avoidance
     """
+
+    # CRITICAL: Safety threshold for "Lava Floor" Protocol
+    # Any square with risk > 5% is considered DEADLY (not traversable)
+    SAFETY_THRESHOLD = 0.05  # 5% risk = too dangerous
+    WALL_THRESHOLD = 0.10    # 10% risk = treat as wall in flood fill
 
     def __init__(self, map_size: int = 8):
         """
@@ -39,25 +47,106 @@ class TrapdoorTracker:
         self.trapdoor_even_location = None
         self.trapdoor_odd_location = None
 
+        # Pre-computed likelihood lookup table (64x64) for sensor probabilities
+        # Directive 1.2: Pre-compute for all (my_pos, trap_pos) combinations
+        self.likelihood_table = self._build_likelihood_table()
+
     def _initialize_edge_weighted_priors(self):
         """
-        Initialize prior probabilities weighted by distance from edge.
-        Center squares (4,4), (3,3), etc. are more likely to have trapdoors.
+        Initialize prior probabilities using EXACT spawn weights from trapdoor_manager.py.
+
+        Source Truth (trapdoor_manager.py lines 62-64):
+        - Outer 2 rings: weight 0.0
+        - Middle ring (2:6, 2:6): weight 1.0
+        - Center 2x2 (3:5, 3:5): weight 2.0
+
+        Then apply parity constraints (even squares for even trap, odd for odd).
         """
-        for y in range(self.map_size):
-            for x in range(self.map_size):
-                # Distance from edge (0 at edge, 3.5 at center for 8x8 board)
-                dist_from_edge = min(x, y, self.map_size - 1 - x, self.map_size - 1 - y)
+        dim = self.map_size
 
-                # Weight: center squares get higher prior probability
-                # Linear weight: 1.0 at edge, 4.0 at center (dist=3.5)
-                weight = 1.0 + dist_from_edge * 0.5
+        # Replicate EXACT source code from trapdoor_manager.py
+        unnormalized = np.zeros((dim, dim), dtype=np.float32)
+        unnormalized[2:dim-2, 2:dim-2] = 1.0  # Middle ring
+        unnormalized[3:dim-3, 3:dim-3] = 2.0  # Center 2x2
 
-                self.prob_even[y, x] = weight
-                self.prob_odd[y, x] = weight
+        # Apply to both even and odd
+        self.prob_even = unnormalized.copy()
+        self.prob_odd = unnormalized.copy()
+
+        # Zero out impossible squares (parity constraint)
+        for y in range(dim):
+            for x in range(dim):
+                is_even_square = (x + y) % 2 == 0
+                if is_even_square:
+                    self.prob_odd[y, x] = 0.0  # Odd trap can't be on even square
+                else:
+                    self.prob_even[y, x] = 0.0  # Even trap can't be on odd square
 
         # Normalize to proper probability distributions
         self._normalize()
+
+    def _build_likelihood_table(self) -> np.ndarray:
+        """
+        Pre-compute 64x64 likelihood lookup table for sensor probabilities.
+
+        Directive 1.2: Exact sensor model from game_map.py
+        Table[my_pos_idx][trap_pos_idx] = P(heard, felt | trap at trap_pos)
+
+        Returns 8x8x8x8x2x2 array: [my_y][my_x][trap_y][trap_x][heard][felt]
+        """
+        # Store probabilities for all combinations
+        # Shape: (8, 8, 8, 8, 2, 2) - last two dims are [heard][felt] boolean outcomes
+        table = np.zeros((8, 8, 8, 8, 2, 2), dtype=np.float32)
+
+        for my_y in range(8):
+            for my_x in range(8):
+                for trap_y in range(8):
+                    for trap_x in range(8):
+                        # Calculate distance (Manhattan components)
+                        delta_x = abs(my_x - trap_x)
+                        delta_y = abs(my_y - trap_y)
+
+                        # Exact probabilities from game_map.py
+                        p_hear = self._prob_hear(delta_x, delta_y)
+                        p_feel = self._prob_feel(delta_x, delta_y)
+
+                        # P(heard=True, felt=True)
+                        table[my_y, my_x, trap_y, trap_x, 1, 1] = p_hear * p_feel
+
+                        # P(heard=True, felt=False)
+                        table[my_y, my_x, trap_y, trap_x, 1, 0] = p_hear * (1 - p_feel)
+
+                        # P(heard=False, felt=True)
+                        table[my_y, my_x, trap_y, trap_x, 0, 1] = (1 - p_hear) * p_feel
+
+                        # P(heard=False, felt=False) - CRUCIAL for negative information
+                        table[my_y, my_x, trap_y, trap_x, 0, 0] = (1 - p_hear) * (1 - p_feel)
+
+        return table
+
+    def _prob_hear(self, delta_x: int, delta_y: int) -> float:
+        """Exact copy of prob_hear from game_map.py"""
+        if delta_x > 2 or delta_y > 2:
+            return 0.0
+        if delta_x == 2 and delta_y == 2:
+            return 0.0
+        if delta_x == 2 or delta_y == 2:
+            return 0.1
+        if delta_x == 1 and delta_y == 1:
+            return 0.25
+        if delta_x == 1 or delta_y == 1:
+            return 0.5
+        return 0.0
+
+    def _prob_feel(self, delta_x: int, delta_y: int) -> float:
+        """Exact copy of prob_feel from game_map.py"""
+        if delta_x > 1 or delta_y > 1:
+            return 0.0
+        if delta_x == 1 and delta_y == 1:
+            return 0.15
+        if delta_x == 1 or delta_y == 1:
+            return 0.3
+        return 0.0
 
     def update_from_sensors(self, current_loc: Tuple[int, int],
                            sensor_data: List[Tuple[bool, bool]]):
@@ -83,11 +172,19 @@ class TrapdoorTracker:
     def _bayesian_update(self, prob_map: np.ndarray, current_loc: Tuple[int, int],
                         heard: bool, felt: bool):
         """
-        Apply Bayes' rule to update probability distribution.
+        Apply Bayes' rule using PRE-COMPUTED likelihood table.
 
-        P(Trap at (x,y) | sensors) ∝ P(sensors | Trap at (x,y)) * P(Trap at (x,y))
+        Directive 1.2: Posterior[x,y] = Prior[x,y] * P(sensors | Trap at x,y)
+
+        Critical: Handles negative information automatically:
+        - If sensors = (False, False), likelihood from table includes (1-p_hear)*(1-p_feel)
+        - This drives neighbor probabilities down when we hear nothing
         """
         cx, cy = current_loc
+
+        # Convert boolean sensors to indices (0 or 1)
+        heard_idx = 1 if heard else 0
+        felt_idx = 1 if felt else 0
 
         for y in range(self.map_size):
             for x in range(self.map_size):
@@ -101,25 +198,11 @@ class TrapdoorTracker:
                     prob_map[y, x] = 1.0
                     continue
 
-                # Calculate Manhattan distance
-                dx = abs(x - cx)
-                dy = abs(y - cy)
+                # Lookup pre-computed likelihood from table
+                # P(heard, felt | Trap at (x,y))
+                likelihood = self.likelihood_table[cy, cx, y, x, heard_idx, felt_idx]
 
-                # Get likelihood: P(sensors | Trap at (x,y))
-                p_hear = self._prob_hear(dx, dy)
-                p_feel = self._prob_feel(dx, dy)
-
-                # Calculate joint probability of observations
-                if heard and felt:
-                    likelihood = p_hear * p_feel
-                elif heard and not felt:
-                    likelihood = p_hear * (1 - p_feel)
-                elif not heard and felt:
-                    likelihood = (1 - p_hear) * p_feel
-                else:  # not heard and not felt
-                    likelihood = (1 - p_hear) * (1 - p_feel)
-
-                # Bayesian update: posterior ∝ likelihood × prior
+                # Bayesian update: Posterior ∝ Likelihood × Prior
                 prob_map[y, x] *= likelihood
 
         # Normalize to maintain probability distribution
@@ -168,6 +251,26 @@ class TrapdoorTracker:
         """Normalize both probability maps"""
         self._normalize_array(self.prob_even)
         self._normalize_array(self.prob_odd)
+
+    def is_safe(self, loc: Tuple[int, int]) -> bool:
+        """
+        "Lava Floor" Protocol: Is this square safe to step on?
+
+        Returns True only if risk <= SAFETY_THRESHOLD (5%)
+        Zero-tolerance approach to trapdoor avoidance.
+        """
+        risk = self.get_trapdoor_risk(loc)
+        return risk <= self.SAFETY_THRESHOLD
+
+    def is_wall(self, loc: Tuple[int, int]) -> bool:
+        """
+        Weaponized Geography: Treat high-risk squares as walls.
+
+        Returns True if risk > WALL_THRESHOLD (10%)
+        Used in flood fill to treat probable traps as terrain obstacles.
+        """
+        risk = self.get_trapdoor_risk(loc)
+        return risk > self.WALL_THRESHOLD
 
     def mark_safe(self, loc: Tuple[int, int]):
         """Mark a cell as safe (visited without dying)"""

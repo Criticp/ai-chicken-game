@@ -116,18 +116,23 @@ class SearchEngine:
         self.max_depth_reached = 0
 
     def search(self, board: "game_board.Board", time_left: Callable,
-               move_history: Optional[List] = None) -> Tuple[Direction, MoveType]:
+               move_history: Optional[List] = None,
+               pos_history: Optional[List] = None) -> Tuple[Direction, MoveType]:
         """
         Perform iterative deepening search to find best move.
 
         Args:
             board: Current board state
             time_left: Callable that returns remaining time in seconds
-            move_history: Recent move history for loop prevention
+            move_history: Recent move history for loop prevention (legacy)
+            pos_history: Position history for breadcrumb trail anti-looping (NEW)
 
         Returns:
             (Direction, MoveType) tuple representing best move
         """
+        # Store pos_history for evaluator access
+        self.pos_history = pos_history if pos_history is not None else []
+
         start_time = time.time()
 
         # Calculate time budget for this move
@@ -141,6 +146,17 @@ class SearchEngine:
 
         # Get valid moves
         valid_moves = board.get_valid_moves(enemy=False)
+
+        # ═══════════════════════════════════════════════════════════════
+        # LAVA FLOOR PROTOCOL: Filter out unsafe moves (risk > 5%)
+        # ═══════════════════════════════════════════════════════════════
+        safe_moves = self._filter_safe_moves(board, valid_moves, enemy=False)
+
+        # Exception: If NO safe moves exist, use risky moves
+        # (Being blocked = -5 eggs, worse than trap = -4 eggs)
+        if safe_moves:
+            valid_moves = safe_moves
+        # else: keep all valid_moves (emergency fallback)
 
         # Prune loops if history provided
         if move_history:
@@ -234,6 +250,9 @@ class SearchEngine:
 
         # Check time
         if time.time() >= deadline:
+            # Inject position history for anti-looping evaluation
+            if hasattr(self.evaluator, 'neural_eval') and hasattr(self, 'pos_history'):
+                self.evaluator.neural_eval._current_pos_history = self.pos_history
             return self.evaluator(board, depth)
 
         # Terminal node checks
@@ -247,6 +266,9 @@ class SearchEngine:
 
         # Depth limit reached
         if depth == 0:
+            # Inject position history for anti-looping evaluation
+            if hasattr(self.evaluator, 'neural_eval') and hasattr(self, 'pos_history'):
+                self.evaluator.neural_eval._current_pos_history = self.pos_history
             score = self.evaluator(board, depth)
             # Negamax: negate if enemy's turn
             return score if is_player_turn else -score
@@ -460,4 +482,39 @@ class SearchEngine:
             return True
         except Exception as e:
             return False
+
+    def _filter_safe_moves(self, board: "game_board.Board",
+                          valid_moves: List[Tuple],
+                          enemy: bool = False) -> List[Tuple]:
+        """
+        LAVA FLOOR PROTOCOL: Filter moves to only include SAFE destinations.
+
+        Returns only moves where destination has risk <= SAFETY_THRESHOLD (5%).
+        If NO safe moves exist, returns empty list (caller handles fallback).
+        """
+        from game.enums import loc_after_direction
+
+        # Get tracker from evaluator (it's in the HybridEvaluator -> NeuralEvaluator)
+        try:
+            tracker = self.evaluator.neural_eval.tracker
+        except AttributeError:
+            # Fallback: if no tracker available, return all moves
+            return valid_moves
+
+        # Get current position
+        if enemy:
+            current_loc = board.chicken_enemy.get_location()
+        else:
+            current_loc = board.chicken_player.get_location()
+
+        safe_moves = []
+        for direction, move_type in valid_moves:
+            # Calculate destination
+            new_loc = loc_after_direction(current_loc, direction)
+
+            # Check if destination is safe using tracker
+            if tracker.is_safe(new_loc):
+                safe_moves.append((direction, move_type))
+
+        return safe_moves
 

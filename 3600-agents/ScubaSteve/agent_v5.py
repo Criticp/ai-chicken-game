@@ -10,7 +10,7 @@ Integrates all 5 components:
 
 from collections.abc import Callable
 from collections import deque
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict
 import json
 import os
 import sys
@@ -69,12 +69,17 @@ class PlayerAgent:
 
         # Component 5: Mobility & Aggression tracking
         self.move_count = 0
-        self.move_history: deque = deque(maxlen=4)  # Last 4 positions for loop detection
-        self.move_history.append(board.chicken_player.get_location())
+
+        # FINAL POLISH: The Breadcrumb Trail (Anti-Looping)
+        # Keep last 8 positions to prevent oscillation
+        self.pos_history = []  # Will store last 8 positions
+        self.move_history: deque = deque(maxlen=4)  # Legacy for compatibility
 
         # Death detection (for teleport detection)
-        self.prev_location = board.chicken_player.get_location()
-        self.spawn_location = board.chicken_player.spawn
+        # NOTE: These will be initialized on first play() call when chicken has been positioned
+        self.prev_location = None
+        self.spawn_location = None
+        self._initialized = False  # Flag to track first-turn initialization
 
         print("[Scuba Steve V5] All systems initialized")
         print(f"  - Trapdoor Tracker: Bayesian inference engine")
@@ -120,6 +125,15 @@ class PlayerAgent:
             (Direction, MoveType) tuple
         """
         current_loc = board.chicken_player.get_location()
+
+        # ====================================================================
+        # STEP 0: FIRST-TURN INITIALIZATION
+        # ====================================================================
+        if not self._initialized:
+            self.prev_location = current_loc
+            self.spawn_location = board.chicken_player.get_spawn()
+            self.move_history.append(current_loc)
+            self._initialized = True
 
         # ====================================================================
         # STEP 1: DEATH DETECTION (Teleport = Trapdoor)
@@ -178,16 +192,25 @@ class PlayerAgent:
         # ====================================================================
         # STEP 4: SEARCH FOR BEST MOVE (Iterative Deepening Negamax)
         # ====================================================================
+        # FINAL POLISH: Pass position history for anti-looping
         best_move = self.search_engine.search(
             board=board,
             time_left=time_left,
-            move_history=list(self.move_history)
+            move_history=list(self.move_history),
+            pos_history=self.pos_history  # NEW: Breadcrumb trail
         )
 
         # ====================================================================
         # STEP 5: UPDATE STATE
         # ====================================================================
         dest_loc = loc_after_direction(current_loc, best_move[0])
+
+        # FINAL POLISH: Update breadcrumb trail (keep last 8 positions)
+        self.pos_history.append(current_loc)
+        if len(self.pos_history) > 8:
+            self.pos_history = self.pos_history[-8:]  # Keep only last 8
+
+        # Legacy tracking (for compatibility)
         self.move_history.append(dest_loc)
         self.prev_location = current_loc
         self.move_count += 1

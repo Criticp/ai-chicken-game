@@ -23,6 +23,14 @@ if engine_path not in sys.path:
 from game import board as game_board
 from game.enums import Result
 
+# Defense & Zoning Specialist - Territory control only
+try:
+    from .territory_engine import TerritoryEvaluator
+    TERRITORY_AVAILABLE = True
+except ImportError:
+    TERRITORY_AVAILABLE = False
+    print("[WARNING] Territory engine not available")
+
 
 class ResidualBlock:
     """
@@ -151,13 +159,46 @@ class NeuralEvaluator:
         self.fc2_weight = None
         self.fc2_bias = None
 
-        # Fallback weights (if NN not loaded)
+        # DEFENSE & ZONING SPECIALIST
+        # Territory evaluator with weaponized geography (traps as walls)
+        if TERRITORY_AVAILABLE:
+            self.territory_evaluator = TerritoryEvaluator(trapdoor_tracker=trapdoor_tracker)
+        else:
+            self.territory_evaluator = None
+
+        # REMOVED: Tactical suicide (incompatible with zero-tolerance safety)
+
+        # Enhanced fallback weights (Defense & Zoning Specialist + FINAL POLISH)
         self.fallback_weights = {
             'egg_diff': 7.6488,
             'mobility': 0.1693,
             'corner_proximity': 2.5,
             'turd_diff': 0.3354,
-            'trapdoor_risk': -20.0,
+
+            # ZERO-TOLERANCE: Massive penalty for ANY trap risk
+            'trapdoor_risk': -100.0,  # Was -20, now -100 (Lava Floor!)
+
+            # Territory control (with weaponized geography)
+            'territory_control': 1.0,
+
+            # Density bonus (encourages backfilling after wall is built)
+            'density_bonus': 2.0,
+
+            # Turd aggression (basic blocking)
+            'turd_aggression': 5.0,
+
+            # FINAL POLISH: The "Great Wall" - turd cut value
+            'turd_cut_weight': 8.0,  # NEW: Rewards turds that slice enemy territory
+
+            # THE PRESS: Safe mobility differential
+            'safe_mobility_press': 3.0,
+
+            # FINAL POLISH: The Breadcrumb Trail - repetition penalty
+            'repetition_penalty': -50.0,  # NEW: -50 per visit to recent position
+
+            # Egg walk tax (walking on own eggs)
+            'egg_walk_penalty': -0.5,  # NEW: Small penalty for stepping on own eggs
+
             'intercept': -0.0055,
         }
 
@@ -334,51 +375,175 @@ class NeuralEvaluator:
 
     def _heuristic_evaluate(self, board: "game_board.Board") -> float:
         """
-        Fallback heuristic evaluation if neural network not loaded.
-        Uses learned linear weights.
+        Fallback heuristic evaluation with Territory & Tactics Upgrade.
+
+        NEW: Territory control via flood fill (replaces simple mobility)
+        NEW: Dynamic trap penalty (tactical suicide calculation)
         """
+        # Initialize score
+        score = 0.0
+
         # Extract features
         egg_diff = board.chicken_player.eggs_laid - board.chicken_enemy.eggs_laid
+        score += self.fallback_weights['egg_diff'] * egg_diff
 
         my_loc = board.chicken_player.get_location()
         enemy_loc = board.chicken_enemy.get_location()
 
+        # OLD: Simple mobility counting
+        # my_moves = len(board.get_valid_moves(enemy=False))
+        # enemy_moves = len(board.get_valid_moves(enemy=True))
+        # NEW: Territory control via flood fill with weaponized geography
+        # Treats probable traps (>10% risk) as walls
+        if self.territory_evaluator:
+            my_area, enemy_area, territory_score = self.territory_evaluator.evaluate_control(board)
+            score += self.fallback_weights['territory_control'] * territory_score
+
+        # Mobility (immediate moves)
         my_moves = len(board.get_valid_moves(enemy=False))
         enemy_moves = len(board.get_valid_moves(enemy=True))
         mobility_diff = my_moves - enemy_moves
+        score += self.fallback_weights['mobility'] * mobility_diff
 
         corner_diff = self._corner_score(my_loc) - self._corner_score(enemy_loc)
+        score += self.fallback_weights['corner_proximity'] * corner_diff
 
         turd_diff = board.chicken_enemy.turds_left - board.chicken_player.turds_left
+        score += self.fallback_weights['turd_diff'] * turd_diff
+
+        # ═══════════════════════════════════════════════════════════════
+        # LAVA FLOOR PROTOCOL: Zero-tolerance trap avoidance
+        # ═══════════════════════════════════════════════════════════════
 
         my_risk = self.tracker.get_trapdoor_risk(my_loc)
         enemy_risk = self.tracker.get_trapdoor_risk(enemy_loc)
-        risk_diff = my_risk - enemy_risk
 
-        # Linear combination
-        score = (
-            self.fallback_weights['egg_diff'] * egg_diff +
-            self.fallback_weights['mobility'] * mobility_diff +
-            self.fallback_weights['corner_proximity'] * corner_diff +
-            self.fallback_weights['turd_diff'] * turd_diff +
-            self.fallback_weights['trapdoor_risk'] * risk_diff +
-            self.fallback_weights['intercept']
-        )
+        # MASSIVE penalty for being on risky square
+        score += self.fallback_weights['trapdoor_risk'] * my_risk  # -100 per 1.0 risk
 
-        # Bonuses
+        # Bonus if enemy is on risky square
+        score -= self.fallback_weights['trapdoor_risk'] * enemy_risk  # Double negative = positive
+
+        # ═══════════════════════════════════════════════════════════════
+        # THE PRESS: Safe Mobility Differential
+        # ═══════════════════════════════════════════════════════════════
+
+        # Count SAFE moves (risk <= 5%) for both players
+        my_safe_moves = self._count_safe_moves(board, enemy=False)
+        enemy_safe_moves = self._count_safe_moves(board, enemy=True)
+        safe_mobility_diff = my_safe_moves - enemy_safe_moves
+
+        # Reward constricting enemy's SAFE options
+        score += self.fallback_weights['safe_mobility_press'] * safe_mobility_diff
+
+        # ═══════════════════════════════════════════════════════════════
+        # FINAL POLISH: The Breadcrumb Trail (Anti-Looping)
+        # ═══════════════════════════════════════════════════════════════
+
+        # Get position history from search engine (if available)
+        pos_history = getattr(self, '_current_pos_history', [])
+        if pos_history and my_loc in pos_history:
+            # Apply repetition penalty: -50 per occurrence
+            repetition_count = pos_history.count(my_loc)
+            repetition_penalty = self.fallback_weights['repetition_penalty'] * repetition_count
+            score += repetition_penalty
+
+            if repetition_count >= 2:
+                # Severe looping detected!
+                score += repetition_penalty  # Double penalty
+
+        # ═══════════════════════════════════════════════════════════════
+        # FINAL POLISH: Egg Walk Tax
+        # ═══════════════════════════════════════════════════════════════
+
+        # Penalize walking on own eggs (wastes a turn unless high territory gain)
+        if my_loc in board.eggs_player:
+            score += self.fallback_weights['egg_walk_penalty']
+
+        # Intercept
+        score += self.fallback_weights['intercept']
+
+        # ═══════════════════════════════════════════════════════════════
+        # BONUSES & PENALTIES
+        # ═══════════════════════════════════════════════════════════════
+
         if board.can_lay_egg():
             if self._is_corner(my_loc):
                 score += 25.0  # Corner egg = 4 eggs
             else:
                 score += 6.0
 
-        # Mobility penalties/bonuses
+        # Critical mobility
         if my_moves < 2:
             score -= 15.0
         if enemy_moves < 2:
             score += 10.0
 
         return score
+
+    def _count_safe_moves(self, board: "game_board.Board", enemy: bool = False) -> int:
+        """
+        THE PRESS: Count moves that are SAFE (risk <= 5%).
+
+        This is different from total legal moves. We only count moves
+        to squares we KNOW are safe, not just legal.
+        """
+        valid_moves = board.get_valid_moves(enemy=enemy)
+
+        # Get current position
+        if enemy:
+            current_loc = board.chicken_enemy.get_location()
+        else:
+            current_loc = board.chicken_player.get_location()
+
+        safe_count = 0
+        for direction, move_type in valid_moves:
+            # Calculate destination
+            from game.enums import loc_after_direction
+            new_loc = loc_after_direction(current_loc, direction)
+
+            # Check if destination is safe (Lava Floor Protocol)
+            if self.tracker.is_safe(new_loc):
+                safe_count += 1
+
+        return safe_count
+
+    def _evaluate_turd_cut(self, board: "game_board.Board", turd_loc: Tuple[int, int]) -> float:
+        """
+        FINAL POLISH: The "Great Wall" - Calculate turd cut value.
+
+        Returns the reduction in enemy's reachable area if turd placed at turd_loc.
+        This identifies choke points where 1 turd can slice off large territory sections.
+        """
+        if not self.territory_evaluator:
+            return 0.0
+
+        try:
+            # Calculate enemy area BEFORE turd
+            _, enemy_area_before, _ = self.territory_evaluator.evaluate_control(board)
+
+            # Simulate turd placement
+            simulated_turds = board.turds_player.copy()
+            simulated_turds.add(turd_loc)
+
+            # Temporarily modify board (hacky but works for evaluation)
+            original_turds = board.turds_player
+            board.turds_player = simulated_turds
+
+            # Calculate enemy area AFTER turd
+            _, enemy_area_after, _ = self.territory_evaluator.evaluate_control(board)
+
+            # Restore original state
+            board.turds_player = original_turds
+
+            # Cut value = how much territory we denied
+            cut_value = enemy_area_before - enemy_area_after
+
+            return cut_value
+
+        except Exception:
+            # Fallback if simulation fails
+            return 0.0
 
     def _corner_score(self, loc: Tuple[int, int]) -> float:
         """Corner proximity score"""
