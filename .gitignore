@@ -1,0 +1,34 @@
+# ===================================================================
+# GIT IGNORE CONFIGURATION
+# Only track 3600-agents folder, ignore everything else
+# ===================================================================
+
+# Ignore EVERYTHING at the root level
+/*
+
+# EXCEPT: Allow the 3600-agents directory
+!3600-agents/
+
+# Allow .gitignore itself
+!.gitignore
+
+# Within 3600-agents, ignore Python cache and compiled files
+3600-agents/**/__pycache__/
+3600-agents/**/*.pyc
+3600-agents/**/*.pyo
+3600-agents/**/*.pyd
+3600-agents/**/.Python
+3600-agents/**/*.so
+3600-agents/**/*.egg
+3600-agents/**/*.egg-info/
+
+# Optionally ignore match result files
+3600-agents/matches/
+
+# ===================================================================
+# RESULT: Only 3600-agents folder contents (except matches) tracked
+# All root-level files and folders (engine, tests, docs) ignored
+# ===================================================================
+
+
+
