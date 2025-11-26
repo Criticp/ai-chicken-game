@@ -200,36 +200,6 @@ class TrapdoorTracker:
         # Normalize to maintain probability distribution
         self._normalize_array(prob_map)
 
-    def _prob_hear(self, delta_x: int, delta_y: int) -> float:
-        """
-        Probability of hearing trapdoor based on Manhattan distance components.
-        From tournament rules probability table.
-        """
-        if delta_x > 2 or delta_y > 2:
-            return 0.0
-        if delta_x == 2 and delta_y == 2:
-            return 0.0
-        if delta_x == 2 or delta_y == 2:
-            return 0.1
-        if delta_x == 1 and delta_y == 1:
-            return 0.25
-        if delta_x == 1 or delta_y == 1:
-            return 0.5
-        return 0.0  # Same cell
-
-    def _prob_feel(self, delta_x: int, delta_y: int) -> float:
-        """
-        Probability of feeling trapdoor based on Manhattan distance components.
-        From tournament rules probability table.
-        """
-        if delta_x > 1 or delta_y > 1:
-            return 0.0
-        if delta_x == 1 and delta_y == 1:
-            return 0.15
-        if delta_x == 1 or delta_y == 1:
-            return 0.3
-        return 0.0  # Same cell
-
     def _normalize_array(self, arr: np.ndarray):
         """Normalize array to sum to 1.0"""
         total = np.sum(arr)
