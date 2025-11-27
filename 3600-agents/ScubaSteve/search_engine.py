@@ -23,6 +23,13 @@ if engine_path not in sys.path:
 from game import board as game_board
 from game.enums import Direction, MoveType, Result, loc_after_direction
 
+# Try to import neural policy for move ordering
+try:
+    from .neural_policy import NeuralPolicy
+    NEURAL_AVAILABLE = True
+except:
+    NEURAL_AVAILABLE = False
+
 
 class TranspositionTable:
     """
@@ -114,6 +121,16 @@ class SearchEngine:
         self.nodes_searched = 0
         self.tt_hits = 0
         self.max_depth_reached = 0
+
+        # Neural policy for move ordering (hybrid approach)
+        self.neural_policy = None
+        if NEURAL_AVAILABLE:
+            self.neural_policy = NeuralPolicy()
+            policy_path = os.path.join(os.path.dirname(__file__), 'chickennet_hybrid_policy.pth')
+            if os.path.exists(policy_path):
+                self.neural_policy.load(policy_path)
+            else:
+                print("[SearchEngine] Neural policy model not found, using heuristic only")
 
     def search(self, board: "game_board.Board", time_left: Callable,
                move_history: Optional[List] = None,
@@ -326,8 +343,41 @@ class SearchEngine:
                     moves: List[Tuple[Direction, MoveType]]) -> List[Tuple[Direction, MoveType]]:
         """
         Order moves for optimal alpha-beta pruning.
-        Priority: Corner Eggs > Eggs > Plains > Turds
+        HYBRID: Uses neural policy + heuristic ordering
         """
+        # Try neural policy first (if available)
+        if self.neural_policy is not None and self.neural_policy.model is not None:
+            try:
+                state = self._create_board_state_for_nn(board)
+                if state is not None:
+                    probs = self.neural_policy.get_move_probs(state)
+
+                    # Combine neural probability with heuristic priority
+                    def move_score(move: Tuple[Direction, MoveType]) -> float:
+                        direction, move_type = move
+
+                        # Neural network preference (0.0-1.0)
+                        nn_score = probs[direction.value]
+
+                        # Heuristic bonuses
+                        heuristic_bonus = 0.0
+                        if move_type == MoveType.EGG:
+                            current_loc = board.chicken_player.get_location()
+                            if self._is_corner(current_loc):
+                                heuristic_bonus = 0.5  # Corner egg bonus
+                            else:
+                                heuristic_bonus = 0.2  # Regular egg bonus
+                        elif move_type == MoveType.TURD:
+                            heuristic_bonus = -0.1  # Turd penalty
+
+                        # Blend: 70% neural, 30% heuristic
+                        return nn_score + heuristic_bonus
+
+                    return sorted(moves, key=move_score, reverse=True)
+            except:
+                pass  # Fall back to heuristic ordering
+
+        # Fallback: Pure heuristic ordering
         def move_priority(move: Tuple[Direction, MoveType]) -> int:
             direction, move_type = move
 
@@ -376,6 +426,61 @@ class SearchEngine:
         """Check if location is a corner"""
         x, y = loc
         return (x == 0 or x == 7) and (y == 0 or y == 7)
+
+    def _create_board_state_for_nn(self, board: "game_board.Board"):
+        """
+        Create 7x8x8 numpy array for neural network input.
+        Same format as training data.
+        """
+        try:
+            import numpy as np
+
+            state = np.zeros((7, 8, 8), dtype=np.float32)
+
+            # Channel 0: My position
+            my_pos = board.chicken_player.get_location()
+            if 0 <= my_pos[0] < 8 and 0 <= my_pos[1] < 8:
+                state[0, my_pos[1], my_pos[0]] = 1.0
+
+            # Channel 1: Enemy position
+            enemy_pos = board.chicken_enemy.get_location()
+            if 0 <= enemy_pos[0] < 8 and 0 <= enemy_pos[1] < 8:
+                state[1, enemy_pos[1], enemy_pos[0]] = 1.0
+
+            # Channel 2: Distance from my position
+            for y in range(8):
+                for x in range(8):
+                    dist = abs(x - my_pos[0]) + abs(y - my_pos[1])
+                    state[2, y, x] = 1.0 - (dist / 14.0)
+
+            # Channel 3: Corner proximity
+            corners = [(0,0), (0,7), (7,0), (7,7)]
+            for y in range(8):
+                for x in range(8):
+                    min_dist = min(abs(x-cx) + abs(y-cy) for cx, cy in corners)
+                    state[3, y, x] = 1.0 - (min_dist / 14.0)
+
+            # Channel 4: Turn number (normalized)
+            turn = board.turn_number
+            state[4, :, :] = turn / 80.0
+
+            # Channel 5: Distance from enemy
+            for y in range(8):
+                for x in range(8):
+                    dist = abs(x - enemy_pos[0]) + abs(y - enemy_pos[1])
+                    state[5, y, x] = 1.0 - (dist / 14.0)
+
+            # Channel 6: Parity mask
+            player_even = board.chicken_player.can_lay_egg_on_even()
+            for y in range(8):
+                for x in range(8):
+                    if ((x + y) % 2 == 0) == player_even:
+                        state[6, y, x] = 1.0
+
+            return state
+        except Exception as e:
+            print(f"[SearchEngine] Failed to create NN state: {e}")
+            return None
 
     def _copy_board(self, board_obj: "game_board.Board") -> "game_board.Board":
         """Deep copy board for simulation"""

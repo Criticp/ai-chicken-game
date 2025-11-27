@@ -207,6 +207,10 @@ class NeuralEvaluator:
             'egg_hunter_weight': 2.0,    # NEW: Attraction to enemy egg clusters
             'corner_gravity': 3.5,       # NEW: Corner proximity gradient (was 2.5)
 
+            # TURD CONSERVATION: Penalty for using turds (makes search prefer eggs/plains)
+            'turd_usage_penalty': -200.0,  # NEW: Heavy penalty for each turd used
+            'early_turd_penalty': -500.0,  # NEW: Extra penalty for early turds (turns 1-20)
+
             'intercept': -0.0055,
         }
 
