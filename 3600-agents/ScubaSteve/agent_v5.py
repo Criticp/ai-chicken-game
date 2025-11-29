@@ -60,7 +60,8 @@ class PlayerAgent:
         # Component 2: Search Engine
         self.search_engine = SearchEngine(
             evaluator=self.evaluator,
-            max_time_per_move=5.0
+            max_time_per_move=5.0,
+            trapdoor_tracker=self.tracker  # Pass tracker for tactical engine
         )
 
         # Component 4: Opening Book
@@ -240,11 +241,6 @@ class PlayerAgent:
         self.prev_location = current_loc
         self.move_count += 1
 
-        # Component 5: Aggression check
-        if best_move[1] == MoveType.TURD:
-            # Only use turds if they reduce enemy mobility
-            enemy_moves_before = len(board.get_valid_moves(enemy=True))
-            print(f"[Aggression] Placing turd (enemy has {enemy_moves_before} moves)")
 
         print(f"[Scuba Steve V5] Move {self.move_count}: {best_move}")
 

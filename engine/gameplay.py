@@ -274,7 +274,7 @@ def play_game(
 
     try:
         player_a_process.start()
-        success_a = main_q_a.get(block=True, timeout=1)
+        success_a = main_q_a.get(block=True, timeout=3)  # Changed from 1 to 3 seconds
         player_a_process.pause_process_and_children()
     except Exception as e:
         message_a = traceback.format_exc()
@@ -282,7 +282,7 @@ def play_game(
 
     try:
         player_b_process.start()
-        success_b = main_q_b.get(block=True, timeout=1)
+        success_b = main_q_b.get(block=True, timeout=3)  # Changed from 1 to 3 seconds
         player_b_process.pause_process_and_children()
     except Exception as e:
         message_b = traceback.format_exc()

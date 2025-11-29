@@ -716,27 +716,6 @@ class HybridEvaluator:
         """
         return self.neural_eval.evaluate(board, depth)
 
-    def evaluate_move_safety(self, board: "game_board.Board",
-                            move: Tuple) -> Tuple[bool, float]:
-        """
-        Check if a move is safe before considering it.
-
-        Returns:
-            (is_safe, penalty) tuple
-        """
-        from game.enums import loc_after_direction
-
-        direction, move_type = move
-        current_loc = board.chicken_player.get_location()
-        dest_loc = loc_after_direction(current_loc, direction)
-
-        # Check risk at destination
-        risk = self.neural_eval.tracker.get_trapdoor_risk(dest_loc)
-
-        if risk > NeuralEvaluator.MAX_RISK_TOLERANCE:
-            return (False, -500.0)  # Unsafe
-
-        return (True, 0.0)  # Safe
 
     def apply_position_penalty(self, score: float, position: Tuple[int, int],
                                history: List[Tuple[int, int]]) -> float:
@@ -772,35 +751,3 @@ class HybridEvaluator:
 
         return score - penalty
 
-    def evaluate_turd_move(self, board: "game_board.Board", turd_loc: Tuple[int, int]) -> float:
-        """
-        DEEPCHICKEN: Evaluate turd move with conservation logic.
-
-        Directive 1.2 & 1.3: Conservation Threshold + Turd Killer Weight
-        - Calculates connectivity collapse impact
-        - Applies conservation threshold (< 8 = waste)
-        - Returns weighted score
-
-        Args:
-            board: Current board state
-            turd_loc: Proposed turd location
-
-        Returns:
-            Score adjustment for turd placement
-        """
-        # Check if territory evaluator available
-        if not hasattr(self.neural_eval, 'territory_evaluator') or not self.neural_eval.territory_evaluator:
-            # Fallback: use basic turd aggression
-            return 0.0
-
-        try:
-            # Calculate connectivity collapse using Zone of Denial
-            impact, weighted_score = self.neural_eval.territory_evaluator.evaluate_turd_with_conservation(
-                board, turd_loc
-            )
-
-            return weighted_score
-
-        except Exception:
-            # Fallback on error
-            return 0.0

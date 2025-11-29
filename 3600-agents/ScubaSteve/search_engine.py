@@ -30,6 +30,14 @@ try:
 except:
     NEURAL_AVAILABLE = False
 
+# Import tactical engine for deep turd/egg analysis
+try:
+    from .tactical_engine import TacticalEngine
+    TACTICAL_AVAILABLE = True
+except:
+    TACTICAL_AVAILABLE = False
+    print("[WARNING] Tactical engine not available")
+
 
 class TranspositionTable:
     """
@@ -107,11 +115,12 @@ class SearchEngine:
     Includes time management and move ordering for optimal performance.
     """
 
-    def __init__(self, evaluator, max_time_per_move: float = 5.0):
+    def __init__(self, evaluator, max_time_per_move: float = 5.0, trapdoor_tracker=None):
         """
         Args:
             evaluator: Evaluation function that takes (board, depth) and returns score
             max_time_per_move: Maximum time to spend on a single move (seconds)
+            trapdoor_tracker: TrapdoorTracker instance for tactical engine
         """
         self.evaluator = evaluator
         self.max_time_per_move = max_time_per_move
@@ -122,6 +131,12 @@ class SearchEngine:
         self.tt_hits = 0
         self.max_depth_reached = 0
 
+        # Tactical engine for quiescence and extensions
+        self.tactical_engine = None
+        if TACTICAL_AVAILABLE and trapdoor_tracker is not None:
+            self.tactical_engine = TacticalEngine(evaluator, trapdoor_tracker)
+            print("[SearchEngine] Tactical engine enabled (quiescence + extensions)")
+
         # Neural policy for move ordering (hybrid approach)
         self.neural_policy = None
         if NEURAL_AVAILABLE:
@@ -131,6 +146,9 @@ class SearchEngine:
                 self.neural_policy.load(policy_path)
             else:
                 print("[SearchEngine] Neural policy model not found, using heuristic only")
+
+        # Killer moves: heuristic for move ordering
+        self.killer_moves = {}
 
     def search(self, board: "game_board.Board", time_left: Callable,
                move_history: Optional[List] = None,
@@ -188,6 +206,65 @@ class SearchEngine:
         if len(valid_moves) == 1:
             return valid_moves[0]
 
+        # ═══════════════════════════════════════════════════════════════
+        # AGGRESSIVE EGG-FIRST STRATEGY
+        # ═══════════════════════════════════════════════════════════════
+        current_loc = board.chicken_player.get_location()
+        our_eggs = len(board.eggs_player)
+        enemy_eggs = len(board.eggs_enemy)
+        egg_diff = our_eggs - enemy_eggs
+
+        # Check for immediate egg opportunities
+        if board.can_lay_egg():
+            egg_moves = [m for m in valid_moves if m[1] == MoveType.EGG]
+
+            if egg_moves:
+                # VIRGIN EGG CHECK: Corners/edges worth 4x eggs!
+                for direction in [Direction.UP, Direction.RIGHT, Direction.DOWN, Direction.LEFT]:
+                    if (direction, MoveType.EGG) not in egg_moves:
+                        continue
+
+                    dest = loc_after_direction(current_loc, direction)
+                    x, y = dest
+
+                    # Corner egg (worth 4 eggs instantly!)
+                    if self._is_corner(dest):
+                        print(f"[EGG-FIRST] IMMEDIATE CORNER EGG at {dest} - No search needed!")
+                        return (direction, MoveType.EGG)
+
+                    # Virgin egg on edge (worth 2 eggs)
+                    if x == 0 or x == 7 or y == 0 or y == 7:
+                        if dest not in board.eggs_player and dest not in board.eggs_enemy:
+                            print(f"[EGG-FIRST] IMMEDIATE VIRGIN EGG at {dest} - No search needed!")
+                            return (direction, MoveType.EGG)
+
+                # Expansion egg (adjacent to existing egg)
+                for direction in [Direction.UP, Direction.RIGHT, Direction.DOWN, Direction.LEFT]:
+                    if (direction, MoveType.EGG) not in egg_moves:
+                        continue
+
+                    dest = loc_after_direction(current_loc, direction)
+
+                    # Check if adjacent to our existing egg
+                    for adj_dir in [Direction.UP, Direction.RIGHT, Direction.DOWN, Direction.LEFT]:
+                        adj_loc = loc_after_direction(dest, adj_dir)
+                        if adj_loc in board.eggs_player:
+                            print(f"[EGG-FIRST] IMMEDIATE EXPANSION EGG at {dest} - No search needed!")
+                            return (direction, MoveType.EGG)
+
+                # If we're behind on eggs (by 3+), force egg search
+                if egg_diff <= -3:
+                    print(f"[EGG FORCING] Behind by {-egg_diff} eggs - filtering to egg moves only")
+                    valid_moves = egg_moves
+                # If tied or slightly behind (by 1-2), prioritize eggs heavily
+                elif egg_diff <= 0:
+                    print(f"[EGG PRIORITY] Filtering out turds - we have {our_eggs} eggs vs enemy {enemy_eggs}")
+                    # Remove turds from search
+                    valid_moves = [m for m in valid_moves if m[1] != MoveType.TURD]
+
+        if len(valid_moves) == 1:
+            return valid_moves[0]
+
         # Iterative deepening
         best_move = valid_moves[0]
         best_score = -float('inf')
@@ -212,6 +289,12 @@ class SearchEngine:
             # Order moves for better alpha-beta cutoffs
             ordered_moves = self._order_moves(board, valid_moves)
 
+            # Add killer move to the front of the list if it exists for this depth
+            if depth in self.killer_moves and self.killer_moves[depth] in ordered_moves:
+                killer = self.killer_moves[depth]
+                ordered_moves.remove(killer)
+                ordered_moves.insert(0, killer)
+
             for move in ordered_moves:
                 if time.time() >= deadline:
                     break
@@ -231,6 +314,7 @@ class SearchEngine:
 
                 alpha = max(alpha, score)
                 if alpha >= beta:
+                    self.killer_moves[depth] = move  # Store killer move for this depth
                     break  # Beta cutoff
 
             # If we completed this depth iteration, update best move
@@ -244,6 +328,9 @@ class SearchEngine:
         elapsed = time.time() - start_time
         print(f"[SearchEngine] Depth={self.max_depth_reached} Nodes={self.nodes_searched} "
               f"TT_hits={self.tt_hits} Time={elapsed:.3f}s")
+
+        # Clear killer moves for the next search
+        self.killer_moves.clear()
 
         return best_move
 
@@ -283,12 +370,23 @@ class SearchEngine:
 
         # Depth limit reached
         if depth == 0:
-            # Inject position history for anti-looping evaluation
-            if hasattr(self.evaluator, 'neural_eval') and hasattr(self, 'pos_history'):
-                self.evaluator.neural_eval._current_pos_history = self.pos_history
-            score = self.evaluator(board, depth)
-            # Negamax: negate if enemy's turn
-            return score if is_player_turn else -score
+            # QUIESCENCE SEARCH: Don't stop at tactical positions
+            if self.tactical_engine is not None:
+                # Search tactical sequences until quiet position
+                score = self.tactical_engine.quiescence_search(
+                    board, alpha, beta, is_player_turn,
+                    depth_remaining=self.tactical_engine.quiescence_max_depth,
+                    deadline=deadline
+                )
+                return score
+            else:
+                # Fallback: static evaluation
+                # Inject position history for anti-looping evaluation
+                if hasattr(self.evaluator, 'neural_eval') and hasattr(self, 'pos_history'):
+                    self.evaluator.neural_eval._current_pos_history = self.pos_history
+                score = self.evaluator(board, depth)
+                # Negamax: negate if enemy's turn
+                return score if is_player_turn else -score
 
         # Check transposition table
         board_hash = self.transposition_table.compute_hash(board)
@@ -322,8 +420,18 @@ class SearchEngine:
             if not self._apply_move(sim_board, move, enemy=not is_player_turn):
                 continue
 
+            # TACTICAL EXTENSIONS: Search deeper for critical moves
+            extension = 0
+            if self.tactical_engine is not None and is_player_turn:
+                if self.tactical_engine.should_extend_search(move, board):
+                    extension = self.tactical_engine.get_extension_depth(move, board)
+                    if extension > 0:
+                        self.tactical_engine.tactical_extensions += 1
+
             # Negamax recursion: negate and swap alpha/beta
-            score = -self._negamax(sim_board, depth - 1, -beta, -alpha,
+            # Add extension depth to search deeper for tactical moves
+            search_depth = depth - 1 + extension
+            score = -self._negamax(sim_board, search_depth, -beta, -alpha,
                                   not is_player_turn, deadline)
 
             if score > best_score:
@@ -348,51 +456,22 @@ class SearchEngine:
         # Try neural policy first (if available)
         if self.neural_policy is not None and self.neural_policy.model is not None:
             try:
-                state = self._create_board_state_for_nn(board)
+                state = self.neural_policy.create_board_state(board)
                 if state is not None:
                     probs = self.neural_policy.get_move_probs(state)
 
                     # Combine neural probability with heuristic priority
                     def move_score(move: Tuple[Direction, MoveType]) -> float:
                         direction, move_type = move
-
-                        # Neural network preference (0.0-1.0)
-                        nn_score = probs[direction.value]
-
-                        # Heuristic bonuses
-                        heuristic_bonus = 0.0
-                        if move_type == MoveType.EGG:
-                            current_loc = board.chicken_player.get_location()
-                            if self._is_corner(current_loc):
-                                heuristic_bonus = 0.5  # Corner egg bonus
-                            else:
-                                heuristic_bonus = 0.2  # Regular egg bonus
-                        elif move_type == MoveType.TURD:
-                            heuristic_bonus = -0.1  # Turd penalty
-
-                        # Blend: 70% neural, 30% heuristic
-                        return nn_score + heuristic_bonus
+                        return probs[direction.value]
 
                     return sorted(moves, key=move_score, reverse=True)
-            except:
-                pass  # Fall back to heuristic ordering
+            except Exception as e:
+                # print(f"Error during neural policy move ordering: {e}")
+                pass  # Fall back to default ordering
 
-        # Fallback: Pure heuristic ordering
-        def move_priority(move: Tuple[Direction, MoveType]) -> int:
-            direction, move_type = move
-
-            if move_type == MoveType.EGG:
-                # Check if laying in corner (worth 4 eggs!)
-                current_loc = board.chicken_player.get_location()
-                if self._is_corner(current_loc):
-                    return -10000  # Highest priority
-                return -1000  # Regular egg
-            elif move_type == MoveType.PLAIN:
-                return 0  # Neutral
-            else:  # MoveType.TURD
-                return 100  # Lowest priority
-
-        return sorted(moves, key=move_priority)
+        # Fallback: default ordering (e.g., random or by type)
+        return sorted(moves, key=lambda m: (m[1] == MoveType.EGG, m[1] == MoveType.PLAIN), reverse=True)
 
     def _prune_loops(self, board: "game_board.Board",
                     moves: List[Tuple[Direction, MoveType]],
@@ -427,60 +506,6 @@ class SearchEngine:
         x, y = loc
         return (x == 0 or x == 7) and (y == 0 or y == 7)
 
-    def _create_board_state_for_nn(self, board: "game_board.Board"):
-        """
-        Create 7x8x8 numpy array for neural network input.
-        Same format as training data.
-        """
-        try:
-            import numpy as np
-
-            state = np.zeros((7, 8, 8), dtype=np.float32)
-
-            # Channel 0: My position
-            my_pos = board.chicken_player.get_location()
-            if 0 <= my_pos[0] < 8 and 0 <= my_pos[1] < 8:
-                state[0, my_pos[1], my_pos[0]] = 1.0
-
-            # Channel 1: Enemy position
-            enemy_pos = board.chicken_enemy.get_location()
-            if 0 <= enemy_pos[0] < 8 and 0 <= enemy_pos[1] < 8:
-                state[1, enemy_pos[1], enemy_pos[0]] = 1.0
-
-            # Channel 2: Distance from my position
-            for y in range(8):
-                for x in range(8):
-                    dist = abs(x - my_pos[0]) + abs(y - my_pos[1])
-                    state[2, y, x] = 1.0 - (dist / 14.0)
-
-            # Channel 3: Corner proximity
-            corners = [(0,0), (0,7), (7,0), (7,7)]
-            for y in range(8):
-                for x in range(8):
-                    min_dist = min(abs(x-cx) + abs(y-cy) for cx, cy in corners)
-                    state[3, y, x] = 1.0 - (min_dist / 14.0)
-
-            # Channel 4: Turn number (normalized)
-            turn = board.turn_number
-            state[4, :, :] = turn / 80.0
-
-            # Channel 5: Distance from enemy
-            for y in range(8):
-                for x in range(8):
-                    dist = abs(x - enemy_pos[0]) + abs(y - enemy_pos[1])
-                    state[5, y, x] = 1.0 - (dist / 14.0)
-
-            # Channel 6: Parity mask
-            player_even = board.chicken_player.can_lay_egg_on_even()
-            for y in range(8):
-                for x in range(8):
-                    if ((x + y) % 2 == 0) == player_even:
-                        state[6, y, x] = 1.0
-
-            return state
-        except Exception as e:
-            print(f"[SearchEngine] Failed to create NN state: {e}")
-            return None
 
     def _copy_board(self, board_obj: "game_board.Board") -> "game_board.Board":
         """Deep copy board for simulation"""
@@ -622,4 +647,3 @@ class SearchEngine:
                 safe_moves.append((direction, move_type))
 
         return safe_moves
-
