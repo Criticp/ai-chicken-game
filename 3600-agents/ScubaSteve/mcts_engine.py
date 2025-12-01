@@ -175,10 +175,13 @@ class MCTSEngine:
 
         # Calculate time budget
         moves_remaining = max(board.turns_left_player, 1)
+        # AGGRESSIVE TIME UPDATE:
+        # Use more time per move since we are ending with 240s left.
+        # Increase safety margin usage from 0.3 to 0.6
         time_budget = min(
-            self.max_time_per_move,
-            time_left() * 0.3,  # Use max 30% of remaining time
-            time_left() / moves_remaining * 2.0  # Or 2x average
+            self.max_time_per_move, # Ensure this is set to something high like 15.0 in init
+            time_left() * 0.6,      # Use up to 60% of remaining bank if needed
+            (time_left() / moves_remaining) * 2.5  # Allocate 2.5x average time
         )
         deadline = start_time + time_budget * 0.8  # Use 80% of budget (safety margin)
 
@@ -279,26 +282,42 @@ class MCTSEngine:
         if node.is_terminal():
             return self._evaluate_terminal(node.board)
 
-        # Copy board for simulation
+        # Truncate rollout to 15 steps + evaluate leaf node
         sim_board = self._copy_board(node.board)
         is_player_turn = node.is_player_turn
-        depth = 0
-        max_depth = 80  # Maximum turns in game
+        # OPTIMIZATION UPDATE: Deepen rollout depth
+        # We have time! Increase from 12 to 35 to see end-game states clearer.
+        current_depth = 0
+        ROLLOUT_LIMIT = 35  # Was 12. Tripled for better long-term vision.
 
         # Play out until game end or max depth
-        while sim_board.winner is None and depth < max_depth and time.time() < deadline:
+        while sim_board.winner is None and current_depth < ROLLOUT_LIMIT:
+            # Check time deadline occasionally
+            if current_depth % 4 == 0 and time.time() > deadline:
+                break
             # Get valid moves
             valid_moves = sim_board.get_valid_moves(enemy=not is_player_turn)
 
             if not valid_moves:
-                # Blocked - apply penalty
-                if is_player_turn:
-                    return 0.0  # Loss
-                else:
-                    return 1.0  # Win
+                # Blocked - this is a terminal state for the simulation
+                break
 
             # Select move using policy (neural-guided or heuristic)
             move = self._select_simulation_move(sim_board, valid_moves, is_player_turn)
+
+            # Apply move
+            self._apply_move_inplace(sim_board, move, enemy=not is_player_turn)
+            is_player_turn = not is_player_turn
+            depth += 1
+
+        # Evaluate the leaf node with the hybrid evaluator
+        if sim_board.winner is not None:
+            return self._evaluate_terminal(sim_board)
+        else:
+            # Use the full evaluator for a better heuristic
+            score = self.evaluator(sim_board)
+            # Normalize score to [0, 1] range for MCTS
+            return 0.5 + (score / 20000.0) # Assuming max score is ~10000
 
             # Apply move
             success = self._apply_move(sim_board, move, enemy=not is_player_turn)
@@ -390,37 +409,64 @@ class MCTSEngine:
                                 valid_moves: List[Tuple[Direction, MoveType]],
                                 is_player_turn: bool) -> Tuple[Direction, MoveType]:
         """
-        Select move during simulation phase.
-        Uses neural policy + heuristics for faster convergence.
-
-        Args:
-            board: Current board state
-            valid_moves: List of valid moves
-            is_player_turn: True if player's turn
-
-        Returns:
-            Selected move
+        Smart Simulation Policy with "Egg Avoidance" (PROJECT FERTILITY)
         """
-        # Prioritize eggs > plains > turds
+        turns_played = board.turn_count
+        game_phase = min(1.0, turns_played / 80.0)
+
+        if is_player_turn:
+            current_loc = board.chicken_player.get_location()
+            my_eggs = board.eggs_player
+            turds_left = board.chicken_player.turds_left
+        else:
+            current_loc = board.chicken_enemy.get_location()
+            my_eggs = board.eggs_enemy
+            turds_left = board.chicken_enemy.turds_left
+
         def move_priority(move: Tuple[Direction, MoveType]) -> int:
             direction, move_type = move
 
-            if move_type == MoveType.EGG:
-                # Check if corner egg (worth 4x)
-                current_loc = board.chicken_player.get_location() if is_player_turn else board.chicken_enemy.get_location()
-                if self._is_corner(current_loc):
-                    return -1000  # Highest priority
-                return -100  # High priority
-            elif move_type == MoveType.PLAIN:
-                return 0  # Neutral
-            else:  # TURD
-                return 100  # Low priority
+            # Calculate destination
+            dest = loc_after_direction(current_loc, direction)
 
-        # Sort by priority
+            if move_type == MoveType.EGG:
+                if self._is_corner(current_loc):
+                    return -1000
+                return -100
+
+            elif move_type == MoveType.PLAIN:
+                # CRITICAL FIX: Penalize stepping on own eggs (PROJECT FERTILITY)
+                if dest in my_eggs:
+                    return 500 # High positive number = Low priority (AVOID)
+                return 0
+
+            else:  # TURD
+                # SPITE PROTOCOL: Dynamic Turd Logic
+                turds_left = board.chicken_player.turds_left if is_player_turn else board.chicken_enemy.turds_left
+
+                # Check who is winning in this simulation state
+                if is_player_turn:
+                    am_winning = board.chicken_player.eggs_laid > board.chicken_enemy.eggs_laid + 1
+                else:
+                    am_winning = board.chicken_enemy.eggs_laid > board.chicken_player.eggs_laid + 1
+
+                # Base penalty (decays over time)
+                priority = 2000.0 * (1.0 - game_phase)
+
+                # If losing/close, REMOVE the penalty (make it viable)
+                if not am_winning and turds_left > 0:
+                    priority = -500 # Negative priority = GOOD (High preference)
+
+                # If winning, keep penalty high (conserve)
+                elif am_winning:
+                    priority += 1000
+
+                return int(max(priority, -2000))
+
         sorted_moves = sorted(valid_moves, key=move_priority)
 
-        # Use epsilon-greedy: 70% best move, 30% random
-        if random.random() < 0.7:
+        # 90% Greedy to avoid the bad moves we just filtered
+        if random.random() < 0.9:
             return sorted_moves[0]
         else:
             return random.choice(valid_moves)
@@ -530,6 +576,51 @@ class MCTSEngine:
         """Deep copy board for simulation (same as search_engine.py)"""
         new_board = game_board.Board(board_obj.game_map, copy=True)
 
+    def _apply_move_inplace(self, board: "game_board.Board",
+                              move: Tuple[Direction, MoveType], enemy: bool):
+        """Apply move directly to the board instance."""
+        board.apply_move(move, enemy)
+
+    def _unmake_move_inplace(self, board: "game_board.Board",
+                               move: Tuple[Direction, MoveType],
+                               original_state: Dict, enemy: bool):
+        """Reverse a move to restore the board state."""
+        board.unmake_move(move, original_state, enemy)
+
+    def _get_board_state(self, board: "game_board.Board") -> Dict:
+        """Capture the necessary state to reverse a move."""
+        return {
+            'player_loc': board.chicken_player.get_location(),
+            'enemy_loc': board.chicken_enemy.get_location(),
+            'eggs_player': board.eggs_player.copy(),
+            'eggs_enemy': board.eggs_enemy.copy(),
+            'turds_player': board.turds_player.copy(),
+            'turds_enemy': board.turds_enemy.copy(),
+            'player_turds_left': board.chicken_player.turds_left,
+            'enemy_turds_left': board.chicken_enemy.turds_left,
+            'player_eggs_laid': board.chicken_player.eggs_laid,
+            'enemy_eggs_laid': board.chicken_enemy.eggs_laid,
+            'turn_count': board.turn_count,
+            'winner': board.winner,
+            'win_reason': board.win_reason,
+        }
+
+    def _apply_move_copy(self, board_obj: "game_board.Board",
+                         move: Tuple[Direction, MoveType], enemy: bool) -> "game_board.Board":
+        """
+        DEPRECATED: Creates a copy and applies the move.
+        Keeping for compatibility, but new logic should use inplace operations.
+        """
+        new_board = self._copy_board(board_obj)
+        self._apply_move_inplace(new_board, move, enemy)
+        return new_board
+
+    def _copy_board(self, board_obj: "game_board.Board") -> "game_board.Board":
+        """
+        DEPRECATED: Creates a deep copy of the board.
+        Very slow, use Make/Unmake for simulations.
+        """
+        new_board = game_board.Board(board_obj.game_map, copy=True)
         new_board.eggs_player = board_obj.eggs_player.copy()
         new_board.eggs_enemy = board_obj.eggs_enemy.copy()
         new_board.turds_player = board_obj.turds_player.copy()

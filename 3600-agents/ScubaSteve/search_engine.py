@@ -183,10 +183,10 @@ class SearchEngine:
             # Fallback
             valid_moves = board.get_valid_moves(enemy=False)
             if not valid_moves:
-                return (Direction.UP, MoveType.PLAIN)
+                return (Direction.UP, MoveType.PLAIN), {}
 
         if len(valid_moves) == 1:
-            return valid_moves[0]
+            return valid_moves[0], {}
 
         # Iterative deepening
         best_move = valid_moves[0]
@@ -283,7 +283,14 @@ class SearchEngine:
         print(f"[SearchEngine] Depth={self.max_depth_reached} Nodes={self.nodes_searched} "
               f"TT_hits={self.tt_hits} Time={elapsed:.3f}s")
 
-        return best_move
+        eval_details = {
+            'score': best_score,
+            'depth': self.max_depth_reached,
+            'nodes': self.nodes_searched,
+            'tt_hits': self.tt_hits,
+        }
+
+        return best_move, eval_details
 
     def _negamax(self, board: "game_board.Board", depth: int, alpha: float, beta: float,
                  is_player_turn: bool, deadline: float) -> float:

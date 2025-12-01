@@ -303,18 +303,12 @@ class NeuralEvaluator:
         if not my_moves:
             return self.BLOCKED_PENALTY  # -500 (5 egg penalty × weight)
 
-        # SAFETY MASK: Massive penalty for high-risk current position
+        # V7 FACELIFT: Expected Value (EV) Risk Management
+        # Instead of a hard penalty, calculate the expected score based on trap probability.
         my_loc = board.chicken_player.get_location()
-        my_risk = self.tracker.get_trapdoor_risk(my_loc)
+        trap_prob = self.tracker.get_trapdoor_risk(my_loc)
 
-        # Critical: Subtract (Risk * 500) as per Lead Architect directive
-        risk_penalty = my_risk * 500.0
-
-        if my_risk > self.MAX_RISK_TOLERANCE:
-            # Immediate danger - massive penalty
-            return -1000.0 - risk_penalty
-
-        # V7 FACELIFT: 50-50 Neural-Heuristic Hybrid
+        # 1. Calculate the raw score of the position assuming it's safe
         if self.model_loaded:
             # Get both evaluations
             neural_score = self._neural_evaluate(board)
@@ -323,19 +317,23 @@ class NeuralEvaluator:
             # Blend 50-50
             base_score = 0.5 * neural_score + 0.5 * heuristic_score
 
-            # Track usage for debugging (every 20 evals)
-            if not hasattr(self, '_eval_count'):
-                self._eval_count = 0
+            # Track usage for debugging
+            if not hasattr(self, '_eval_count'): self._eval_count = 0
             self._eval_count += 1
-
-            if self._eval_count % 20 == 0:
+            if self._eval_count % 100 == 0:
                 print(f"[V7 Hybrid] Neural: {neural_score:.1f}, Heuristic: {heuristic_score:.1f}, Blended: {base_score:.1f}")
         else:
             # Fallback to heuristic only
             base_score = self._heuristic_evaluate(board)
 
-        # Apply risk penalty to final score
-        return base_score - risk_penalty
+        # 2. Define cost of hitting a trap (Teleport + Enemy gets 4 eggs + Lost tempo)
+        # A conservative estimate is -600 points.
+        TRAP_PENALTY = -600.0
+
+        # 3. Calculate Expected Value
+        expected_value = ((1.0 - trap_prob) * base_score) + (trap_prob * TRAP_PENALTY)
+
+        return expected_value
 
     def _neural_evaluate(self, board: "game_board.Board") -> float:
         """
@@ -412,11 +410,11 @@ class NeuralEvaluator:
 
     def _heuristic_evaluate(self, board: "game_board.Board") -> float:
         """
-        Fallback heuristic evaluation with Territory & Tactics Upgrade.
-
-        NEW: Territory control via flood fill (replaces simple mobility)
-        NEW: Dynamic trap penalty (tactical suicide calculation)
+        PROJECT FERTILITY: Simplified fertility-based evaluation.
+        Prevents safety loops and parity dead-ends.
         """
+        from .fertility_eval import heuristic_evaluate_fertility
+        return heuristic_evaluate_fertility(self, board)
         # Initialize score
         score = 0.0
 
