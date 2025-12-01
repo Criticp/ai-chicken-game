@@ -50,7 +50,7 @@ class PlayerAgent:
         # Note: Neural network is slow in NumPy, using fast heuristic evaluation
         # To enable NN: change use_neural=True
         model_path = os.path.join(os.path.dirname(__file__), 'chicken_eval_model_numpy.json')
-        use_neural = False  # Set to True to use trained NN (slower but potentially better)
+        use_neural = True  # Set to True to use trained NN (slower but potentially better)
 
         if use_neural:
             self.evaluator = HybridEvaluator(self.tracker, model_path)
