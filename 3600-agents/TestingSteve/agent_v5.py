@@ -26,6 +26,7 @@ from game.enums import Direction, MoveType, Result, loc_after_direction
 from .trapdoor_tracker import TrapdoorTracker
 from .search_engine import SearchEngine
 from .evaluator import HybridEvaluator
+from .turd_advisor import TurdAdvisor
 
 
 class PlayerAgent:
@@ -63,6 +64,14 @@ class PlayerAgent:
             max_time_per_move=5.0
         )
 
+        # Component 6: Turd Advisor (Strategic Decision Maker)
+        # Uses territory evaluator to score turd placements and make decisions
+        try:
+            self.turd_advisor = TurdAdvisor(self.evaluator.neural_eval)
+        except Exception as e:
+            print(f"[TurdAdvisor] Failed to initialize: {e}")
+            self.turd_advisor = None
+
         # Component 4: Opening Book
         self.opening_book: Dict[str, Tuple[Direction, MoveType]] = {}
         self._load_opening_book()
@@ -85,6 +94,7 @@ class PlayerAgent:
         print(f"  - Trapdoor Tracker: Bayesian inference engine")
         print(f"  - Search Engine: Iterative deepening negamax with transposition table")
         print(f"  - Evaluator: {'Neural Network (TRAINED)' if self.evaluator.neural_eval.model_loaded else 'Heuristic (FAST)'}")
+        print(f"  - Turd Advisor: Strategic turd placement validator (80% threshold)")
         print(f"  - Opening Book: {len(self.opening_book)} positions")
 
     def _load_opening_book(self):
@@ -224,6 +234,53 @@ class PlayerAgent:
                     best_move = safe_moves[0]
                     print(f"[GUARDIAN] ✓ Using safe move: {best_move}")
 
+        # ====================================================================
+        # STEP 4.75: TURD ADVISOR - STRATEGIC DECISION MAKER
+        # ====================================================================
+        if best_move[1] == MoveType.TURD and self.turd_advisor is not None:
+            # Agent wants to place turd - use TurdAdvisor to evaluate if it's the BEST place
+            try:
+                # Get the advisor's recommendation for best turd placement
+                recommendation = self.turd_advisor.recommend(board)
+
+                if recommendation:
+                    # Check if current location matches advisor's top recommendation
+                    # or if advisor scores this location highly
+                    current_score = self.turd_advisor.score_cell(board, current_loc)
+
+                    # If current location is good enough (within 80% of best score), approve
+                    score_threshold = recommendation.score * 0.8
+
+                    if current_score.score >= score_threshold:
+                        print(f"[TURD ADVISOR] ✓ APPROVED - Score: {current_score.score:.1f} (Threshold: {score_threshold:.1f})")
+                        # Keep the turd move
+                    else:
+                        # Current location not ideal - suggest alternative
+                        print(f"[TURD ADVISOR] ✗ REJECTED - Score: {current_score.score:.1f} < Threshold: {score_threshold:.1f}")
+                        print(f"[TURD ADVISOR] Best location would be {recommendation.cell} (score: {recommendation.score:.1f})")
+
+                        # Replace turd with alternative move (egg or plain in same direction)
+                        if board.is_valid_move(best_move[0], MoveType.EGG, enemy=False):
+                            best_move = (best_move[0], MoveType.EGG)
+                            print(f"[TURD ADVISOR] → Using EGG instead")
+                        elif board.is_valid_move(best_move[0], MoveType.PLAIN, enemy=False):
+                            best_move = (best_move[0], MoveType.PLAIN)
+                            print(f"[TURD ADVISOR] → Using PLAIN instead")
+                        else:
+                            # Get any egg move as fallback
+                            all_moves = board.get_valid_moves(enemy=False)
+                            egg_moves = [m for m in all_moves if m[1] == MoveType.EGG]
+                            if egg_moves:
+                                best_move = egg_moves[0]
+                                print(f"[TURD ADVISOR] → Using alternative EGG move")
+                            else:
+                                # Keep turd as last resort
+                                print(f"[TURD ADVISOR] → No alternatives, keeping turd")
+                else:
+                    # No recommendation available, trust search
+                    print(f"[TURD ADVISOR] No recommendation available, trusting search")
+            except Exception as e:
+                print(f"[TURD ADVISOR] Error: {e}, trusting search")
 
         # ====================================================================
         # STEP 5: UPDATE STATE
@@ -423,6 +480,63 @@ class PlayerAgent:
 
         # Ultimate fallback: return original moves
         return valid_moves
+
+    # ========================================================================
+    # LIGHTWEIGHT TURD FILTER: Prevent Wasteful Turds (Trust Search for Strategy)
+    # ========================================================================
+
+    def _lightweight_turd_filter(self, board: "game_board.Board",
+                                 current_loc: Tuple[int, int]) -> Tuple[bool, str]:
+        """
+        LIGHTWEIGHT TURD FILTER: Only reject obviously wasteful turds.
+
+        Philosophy: Trust the search engine's turd decisions (it has good heuristics).
+        Only block turds that are clearly wasteful:
+        - Very early game (first 8 turns - need to explore)
+        - Far from any action (>6 from enemy AND >4 from our territory)
+        - Last turd wasted on low-value position
+
+        DEFAULT: APPROVE (let the agent's search make strategic decisions)
+
+        Args:
+            board: Current board state
+            current_loc: Position where turd would be placed
+
+        Returns:
+            (approved: bool, reason: str)
+        """
+        from game.board import manhattan_distance
+
+        turn = board.turn_count
+        turds_left = board.chicken_player.get_turds_left()
+        enemy_pos = board.chicken_enemy.get_location()
+
+        # RULE 1: No turds in first 8 turns (let agent explore and establish territory)
+        if turn < 8:
+            return False, f"Turn {turn} < 8 (explore first)"
+
+        # RULE 2: Reserve last turd for critical moments only
+        if turds_left <= 1:
+            dist_to_enemy = manhattan_distance(current_loc, enemy_pos)
+            if dist_to_enemy > 4:
+                return False, f"Last turd - too far from enemy ({dist_to_enemy} squares)"
+
+        # RULE 3: Reject turds that are wastefully far from action
+        dist_to_enemy = manhattan_distance(current_loc, enemy_pos)
+
+        # Check distance to our nearest egg (are we in/near our territory?)
+        min_dist_to_our_eggs = float('inf')
+        if board.eggs_player:
+            for egg in board.eggs_player:
+                dist = manhattan_distance(current_loc, egg)
+                min_dist_to_our_eggs = min(min_dist_to_our_eggs, dist)
+
+        # Wasteful if far from enemy AND far from our territory
+        if dist_to_enemy > 6 and min_dist_to_our_eggs > 4:
+            return False, f"Wasteful (enemy:{dist_to_enemy}, our territory:{min_dist_to_our_eggs})"
+
+        # DEFAULT: APPROVE - trust the search engine
+        return True, "✓ Approved"
 
     # ========================================================================
     # TURD STRATEGY MANAGER: Smart Turd Conservation Helper Methods

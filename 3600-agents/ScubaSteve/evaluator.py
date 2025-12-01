@@ -168,51 +168,61 @@ class NeuralEvaluator:
 
         # REMOVED: Tactical suicide (incompatible with zero-tolerance safety)
 
-        # Enhanced fallback weights (Defense & Zoning + DeepChicken + PROJECT VANGUARD)
+        # V7 FACELIFT: Rebalanced weights for egg maximization + efficiency
+        # Philosophy: EGG FIRST, safety always, strategic turds only
+        # Target: 25+ eggs/game, 95%+ movement efficiency, 80%+ win rate
         self.fallback_weights = {
-            'egg_diff': 7.6488,
-            'mobility': 0.1693,
-            'corner_proximity': 2.5,
-            'turd_diff': 0.3354,
+            # CORE GAME METRICS - Egg maximization is KING
+            'egg_diff': 100.0,  # MASSIVE BOOST - egg differential is everything
+            'egg_placement_bonus': 150.0,  # CRITICAL: Always prefer laying eggs (was 50)
 
-            # ZERO-TOLERANCE: Massive penalty for ANY trap risk
-            'trapdoor_risk': -100.0,
+            # MOVEMENT & EFFICIENCY - Explore efficiently
+            'mobility': 3.0,  # Increased - having options matters
+            'corner_proximity': 2.0,  # Moderate - corners are strategic
+            'turd_diff': 1.0,  # Low - turds less important than eggs
 
-            # Territory control (with weaponized geography)
-            'territory_control': 1.0,
+            # SAFETY METRICS - Never die
+            'trapdoor_risk': -100.0,  # HIGH PENALTY - safety is critical
+            'territory_control': 5.0,  # Increased - controlling board matters
+            'safe_mobility_press': 4.0,  # Increased - restrict opponent movement
 
-            # Density bonus (encourages backfilling after wall is built)
-            'density_bonus': 2.0,
+            # ANTI-LOOPING - High efficiency required
+            'repetition_penalty': -50.0,  # STRONG - don't revisit positions (was -15)
+            'recent_visit_penalty': -100.0,  # STRONG - recent revisits very bad (was -50)
+            'egged_cell_penalty': -200.0,  # SEVERE - never walk on eggs (was -100)
+            'backtrack_penalty': -30.0,  # Moderate - discourage backtracking (was -10)
+            'egg_walk_penalty': -5.0,  # Increased - walking on eggs wastes turn
 
-            # Turd aggression (basic blocking)
-            'turd_aggression': 5.0,
+            # EXPLORATION BONUSES - Maximum coverage
+            'exploration_freshness': 80.0,  # HUGE BOOST - unvisited cells top priority (was 30)
+            'density_bonus': 3.0,  # Increased - fill in gaps
+            'invasion_weight': 2.0,  # Moderate - push forward
+            'egg_hunter_weight': 3.0,  # Increased - target fresh territory
+            'corner_gravity': 4.0,  # Increased - corners are valuable
 
-            # FINAL POLISH: The "Great Wall" - turd cut value
-            'turd_cut_weight': 8.0,
+            # TURD STRATEGY - Conservative but strategic
+            'turd_usage_penalty': -300.0,  # SEVERE - save turds (was -200)
+            'early_turd_penalty': -1000.0,  # MASSIVE - NO early turds! (was -500)
+            'turd_aggression': 5.0,  # Moderate - blocking is good when needed
+            'turd_cut_weight': 10.0,  # Increased - cutting territory valuable
+            'turd_killer': 15.0,  # Increased - removing enemy options powerful
+            'parity_turd_bonus': 20.0,  # Increased - parity blocking excellent
 
-            # DEEPCHICKEN: Turd Warfare - Zone of Denial impact
-            'turd_killer': 10.0,
+            # SIMPLIFIED - Removed complex mode bonuses (invasion, frenzy, walls)
+            # Focus on core gameplay instead
 
-            # THE PRESS: Safe mobility differential
-            'safe_mobility_press': 3.0,
-
-            # FINAL POLISH: The Breadcrumb Trail - repetition penalty
-            'repetition_penalty': -50.0,
-
-            # Egg walk tax (walking on own eggs)
-            'egg_walk_penalty': -0.5,
-
-            # PROJECT VANGUARD: Aggression & Corner Hunting
-            'invasion_weight': 1.5,      # NEW: Forward progress into enemy territory
-            'egg_hunter_weight': 2.0,    # NEW: Attraction to enemy egg clusters
-            'corner_gravity': 3.5,       # NEW: Corner proximity gradient (was 2.5)
-
-            # TURD CONSERVATION: Penalty for using turds (makes search prefer eggs/plains)
-            'turd_usage_penalty': -200.0,  # NEW: Heavy penalty for each turd used
-            'early_turd_penalty': -500.0,  # NEW: Extra penalty for early turds (turns 1-20)
-
-            'intercept': -0.0055,
+            'intercept': 0.0,  # Neutral baseline
         }
+
+        # INVASION MODE: Context passed from agent
+        self.invasion_mode = False
+        self.exploration_frenzy = False  # NEW: Exploration frenzy mode
+        self.territory_tracker = None
+        self.exploration_tracker = None
+        self.spawn_location = None  # For distance calculations in frenzy mode
+
+        # WALL STRATEGY: Separator planner reference
+        self.separator_planner = None  # Will be set by agent
 
 
         self.model_loaded = False
@@ -271,7 +281,7 @@ class NeuralEvaluator:
 
     def evaluate(self, board: "game_board.Board", depth: int = 0) -> float:
         """
-        Evaluate board position.
+        Evaluate board position using 50-50 Neural-Heuristic Hybrid.
 
         Args:
             board: Board state to evaluate
@@ -304,10 +314,24 @@ class NeuralEvaluator:
             # Immediate danger - massive penalty
             return -1000.0 - risk_penalty
 
-        # Use Neural Network if loaded
+        # V7 FACELIFT: 50-50 Neural-Heuristic Hybrid
         if self.model_loaded:
-            base_score = self._neural_evaluate(board)
+            # Get both evaluations
+            neural_score = self._neural_evaluate(board)
+            heuristic_score = self._heuristic_evaluate(board)
+
+            # Blend 50-50
+            base_score = 0.5 * neural_score + 0.5 * heuristic_score
+
+            # Track usage for debugging (every 20 evals)
+            if not hasattr(self, '_eval_count'):
+                self._eval_count = 0
+            self._eval_count += 1
+
+            if self._eval_count % 20 == 0:
+                print(f"[V7 Hybrid] Neural: {neural_score:.1f}, Heuristic: {heuristic_score:.1f}, Blended: {base_score:.1f}")
         else:
+            # Fallback to heuristic only
             base_score = self._heuristic_evaluate(board)
 
         # Apply risk penalty to final score
@@ -474,6 +498,132 @@ class NeuralEvaluator:
             score += self.fallback_weights['egg_walk_penalty']
 
         # ═══════════════════════════════════════════════════════════════
+        # ANTI-LOOPING: Strengthen loop prevention
+        # ═══════════════════════════════════════════════════════════════
+
+        # Penalty for cells we've recently visited (last 8 turns)
+        if self.exploration_tracker:
+            if my_loc in self.exploration_tracker.visited_turn:
+                last_visit = self.exploration_tracker.visited_turn[my_loc]
+                turns_since_visit = board.turn_count - last_visit
+
+                # Heavy penalty if visited in last 8 turns
+                if turns_since_visit < 8:
+                    score += self.fallback_weights['recent_visit_penalty']
+
+        # Massive penalty for moving to cells with our eggs (complete waste)
+        if my_loc in board.eggs_player:
+            score += self.fallback_weights['egged_cell_penalty']  # -300
+
+            # EXTRA PENALTY during normal mode (non-invasion): Make it almost impossible
+            if not self.invasion_mode:
+                score -= 200.0  # Total: -500 penalty for egg-backtracking in normal mode
+                print(f"[ANTI-BACKTRACK] Severe penalty for revisiting egg at {my_loc}")
+
+        # ═══════════════════════════════════════════════════════════════
+        # INVASION MODE: Aggressive opponent territory exploration
+        # ═══════════════════════════════════════════════════════════════
+
+        if self.invasion_mode and self.territory_tracker:
+            # Massive bonus for being on opponent's side
+            if self.territory_tracker.is_opponent_side(my_loc):
+                score += self.fallback_weights['invasion_opponent_side_bonus']
+
+                # Even bigger bonus if this is an unexplored opponent cell
+                if self.exploration_tracker:
+                    if my_loc not in self.exploration_tracker.visited_turn:
+                        score += self.fallback_weights['invasion_unexplored_bonus']
+                        print(f"[INVASION] Unexplored opponent cell {my_loc} - bonus: +{self.fallback_weights['invasion_unexplored_bonus']}")
+
+            # Penalty for staying on our side during invasion
+            elif self.territory_tracker.is_our_side(my_loc):
+                score -= 50.0  # Push agent to cross over
+
+        # NORMAL MODE: Bonus for exploring OUR expanded territory
+        # Encourage filling our 60% of the board before invading
+        elif not self.invasion_mode and self.territory_tracker:
+            if self.territory_tracker.is_our_side(my_loc):
+                # Bonus for being on our side
+                score += 25.0
+
+                # Extra bonus for unexplored cells on our side
+                if self.exploration_tracker:
+                    if my_loc not in self.exploration_tracker.visited_turn:
+                        score += 40.0  # Encourage exploring new cells on our side
+
+                # Extra bonus if not egged yet
+                if my_loc not in board.eggs_player:
+                    score += 15.0  # Prefer fresh cells
+
+        # ═══════════════════════════════════════════════════════════════
+        # EXPLORATION FRENZY MODE: Pure exploration focus
+        # ═══════════════════════════════════════════════════════════════
+
+        if self.exploration_frenzy and self.exploration_tracker:
+            # MASSIVE bonus for visiting completely unvisited cells
+            if my_loc not in self.exploration_tracker.visited_turn:
+                score += self.fallback_weights['frenzy_unvisited_bonus']  # +200
+
+                # Extra bonus if it's far from spawn (encourage wide exploration)
+                spawn_loc = getattr(self, 'spawn_location', None)
+                if spawn_loc:
+                    distance_from_spawn = abs(my_loc[0] - spawn_loc[0]) + abs(my_loc[1] - spawn_loc[1])
+                    score += distance_from_spawn * 15.0  # Reward distance from spawn
+
+            # Multiply normal exploration bonuses
+            exploration_bonus = self.fallback_weights.get('exploration_bonus', 0)
+            if exploration_bonus > 0:
+                score += exploration_bonus * (self.fallback_weights['frenzy_exploration_multiplier'] - 1)  # Add 2x more
+
+            # Heavily penalize staying still or moving to already-visited cells
+            if my_loc in self.exploration_tracker.visited_turn:
+                visits = self.exploration_tracker.visited_turn[my_loc]
+                score -= 100.0 * (1 + visits)  # Escalating penalty for multiple visits
+
+            # Still respect trapdoor safety (don't override safety penalties)
+            # The trapdoor penalties are already applied above, so frenzy won't override them
+
+        # ═══════════════════════════════════════════════════════════════
+        # TURD WALL STRATEGY: Strategic wall building bonuses
+        # ═══════════════════════════════════════════════════════════════
+
+        # EARLY GAME (turns < 30): Massive bonus for being at wall positions
+        if board.turn_count < 30 and self.separator_planner:
+            if self.separator_planner.is_wall_position(my_loc):
+                wall_bonus = self.fallback_weights['wall_division_bonus']
+
+                # Multiplier if walls already partially built (synergy)
+                if self.separator_planner.both_walls_active():
+                    wall_bonus *= self.fallback_weights['wall_completion_multiplier']
+
+                score += wall_bonus
+
+                if board.turn_count % 10 == 0:  # Log occasionally
+                    print(f"[WALL BONUS] Position {my_loc} on wall line: +{wall_bonus:.0f}")
+
+        # MID/LATE GAME (turns >= 30): Avoid saturated territory
+        if board.turn_count >= 30 and self.territory_tracker:
+            saturation = self.territory_tracker.calculate_saturation(board)
+
+            # If our side is saturated (>70%), penalize being there
+            if saturation >= 70.0:
+                if self.territory_tracker.is_our_side(my_loc):
+                    # Heavy penalty for staying on saturated side
+                    saturation_penalty = self.fallback_weights['saturated_area_penalty']
+                    score += saturation_penalty
+
+                    if board.turn_count % 10 == 0:
+                        print(f"[SATURATION] Our side {saturation:.0f}% full, penalty for staying: {saturation_penalty:.0f}")
+
+                # Bonus for moving to opponent side (fresh territory)
+                elif self.territory_tracker.is_opponent_side(my_loc):
+                    opponent_bonus = self.fallback_weights['fresh_opponent_bonus']
+                    score += opponent_bonus
+
+                    if board.turn_count % 10 == 0:
+                        print(f"[FRESH TERRITORY] Opponent side bonus: +{opponent_bonus:.0f}")
+
+        # ═══════════════════════════════════════════════════════════════
         # PROJECT VANGUARD: Aggression & Corner Hunting
         # ═══════════════════════════════════════════════════════════════
 
@@ -497,10 +647,16 @@ class NeuralEvaluator:
         # ═══════════════════════════════════════════════════════════════
 
         if board.can_lay_egg():
+            egg_bonus = 6.0
+
+            # Double bonus during invasion mode
+            if self.invasion_mode:
+                egg_bonus *= self.fallback_weights['invasion_egg_placement_multiplier']
+
             if self._is_corner(my_loc):
                 score += 25.0  # Corner egg = 4 eggs (3x bonus)
             else:
-                score += 6.0
+                score += egg_bonus
 
         # Critical mobility
         if my_moves < 2:
@@ -716,6 +872,27 @@ class HybridEvaluator:
         """
         return self.neural_eval.evaluate(board, depth)
 
+    def evaluate_move_safety(self, board: "game_board.Board",
+                            move: Tuple) -> Tuple[bool, float]:
+        """
+        Check if a move is safe before considering it.
+
+        Returns:
+            (is_safe, penalty) tuple
+        """
+        from game.enums import loc_after_direction
+
+        direction, move_type = move
+        current_loc = board.chicken_player.get_location()
+        dest_loc = loc_after_direction(current_loc, direction)
+
+        # Check risk at destination
+        risk = self.neural_eval.tracker.get_trapdoor_risk(dest_loc)
+
+        if risk > NeuralEvaluator.MAX_RISK_TOLERANCE:
+            return (False, -500.0)  # Unsafe
+
+        return (True, 0.0)  # Safe
 
     def apply_position_penalty(self, score: float, position: Tuple[int, int],
                                history: List[Tuple[int, int]]) -> float:
@@ -751,3 +928,35 @@ class HybridEvaluator:
 
         return score - penalty
 
+    def evaluate_turd_move(self, board: "game_board.Board", turd_loc: Tuple[int, int]) -> float:
+        """
+        DEEPCHICKEN: Evaluate turd move with conservation logic.
+
+        Directive 1.2 & 1.3: Conservation Threshold + Turd Killer Weight
+        - Calculates connectivity collapse impact
+        - Applies conservation threshold (< 8 = waste)
+        - Returns weighted score
+
+        Args:
+            board: Current board state
+            turd_loc: Proposed turd location
+
+        Returns:
+            Score adjustment for turd placement
+        """
+        # Check if territory evaluator available
+        if not hasattr(self.neural_eval, 'territory_evaluator') or not self.neural_eval.territory_evaluator:
+            # Fallback: use basic turd aggression
+            return 0.0
+
+        try:
+            # Calculate connectivity collapse using Zone of Denial
+            impact, weighted_score = self.neural_eval.territory_evaluator.evaluate_turd_with_conservation(
+                board, turd_loc
+            )
+
+            return weighted_score
+
+        except Exception:
+            # Fallback on error
+            return 0.0
