@@ -419,3 +419,77 @@ class TrapdoorTracker:
 
         return float(combined_risk)
 
+    def sample_trapdoor_configuration(self) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """
+        Sample concrete trapdoor locations from Bayesian probability distributions.
+
+        Used by MCTS to generate specific trapdoor placements weighted by belief probabilities.
+        Each simulation can test different possible trapdoor scenarios.
+
+        Returns:
+            ((even_x, even_y), (odd_x, odd_y)) - Sampled trapdoor locations
+        """
+        # If trapdoors are already found, return known locations
+        if len(self.found_trapdoors) >= 2:
+            traps = list(self.found_trapdoors)
+            # Determine which is even/odd by parity
+            trap1, trap2 = traps[0], traps[1]
+            x1, y1 = trap1
+            x2, y2 = trap2
+
+            if (x1 + y1) % 2 == 0:
+                return (trap1, trap2)  # trap1 is even, trap2 is odd
+            else:
+                return (trap2, trap1)  # trap2 is even, trap1 is odd
+
+        # Sample even trapdoor location
+        even_loc = self._sample_from_distribution(self.prob_even, even_parity=True)
+
+        # Sample odd trapdoor location
+        odd_loc = self._sample_from_distribution(self.prob_odd, even_parity=False)
+
+        return (even_loc, odd_loc)
+
+    def _sample_from_distribution(self, prob_map: np.ndarray, even_parity: bool) -> Tuple[int, int]:
+        """
+        Sample a single location from probability distribution.
+
+        Args:
+            prob_map: 8x8 probability matrix
+            even_parity: True for even trapdoor, False for odd
+
+        Returns:
+            (x, y) sampled location
+        """
+        # Flatten probability map to 1D array
+        flat_probs = prob_map.flatten()
+
+        # Normalize to ensure it sums to 1.0
+        total = np.sum(flat_probs)
+        if total < 1e-10:
+            # If all zeros, use uniform over valid parity squares
+            flat_probs = np.zeros(64, dtype=np.float32)
+            for y in range(self.map_size):
+                for x in range(self.map_size):
+                    is_even = (x + y) % 2 == 0
+                    if is_even == even_parity:
+                        # Check if in valid spawn region (center area)
+                        if 2 <= x <= 5 and 2 <= y <= 5:
+                            idx = y * self.map_size + x
+                            flat_probs[idx] = 1.0
+
+            total = np.sum(flat_probs)
+            if total < 1e-10:
+                # Ultimate fallback: center of board
+                return (3, 3) if even_parity else (3, 4)
+
+        flat_probs = flat_probs / total
+
+        # Sample index using probability distribution
+        idx = np.random.choice(64, p=flat_probs)
+
+        # Convert back to (x, y)
+        y = idx // self.map_size
+        x = idx % self.map_size
+
+        return (x, y)

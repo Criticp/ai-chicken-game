@@ -5,7 +5,7 @@ Implements:
 - Negamax with Alpha-Beta Pruning
 - Iterative Deepening (IDDFS)
 - Transposition Table with Zobrist Hashing
-- Move Ordering (Eggs → Plains → Turds)
+- Heuristic Move Ordering (Eggs → Plains → Turds)
 - Time Management
 """
 
@@ -23,12 +23,8 @@ if engine_path not in sys.path:
 from game import board as game_board
 from game.enums import Direction, MoveType, Result, loc_after_direction
 
-# Try to import neural policy for move ordering
-try:
-    from .neural_policy import NeuralPolicy
-    NEURAL_AVAILABLE = True
-except:
-    NEURAL_AVAILABLE = False
+# Import centralized weights configuration
+from .weights_config import *
 
 
 class TranspositionTable:
@@ -107,7 +103,7 @@ class SearchEngine:
     Includes time management and move ordering for optimal performance.
     """
 
-    def __init__(self, evaluator, max_time_per_move: float = 5.0):
+    def __init__(self, evaluator, max_time_per_move: float = MAX_TIME_PER_MOVE):
         """
         Args:
             evaluator: Evaluation function that takes (board, depth) and returns score
@@ -122,15 +118,6 @@ class SearchEngine:
         self.tt_hits = 0
         self.max_depth_reached = 0
 
-        # Neural policy for move ordering (hybrid approach)
-        self.neural_policy = None
-        if NEURAL_AVAILABLE:
-            self.neural_policy = NeuralPolicy()
-            policy_path = os.path.join(os.path.dirname(__file__), 'chickennet_hybrid_policy.pth')
-            if os.path.exists(policy_path):
-                self.neural_policy.load(policy_path)
-            else:
-                print("[SearchEngine] Neural policy model not found, using heuristic only")
 
     def search(self, board: "game_board.Board", time_left: Callable,
                move_history: Optional[List] = None,
@@ -156,8 +143,8 @@ class SearchEngine:
         moves_remaining = max(board.turns_left_player, 1)
         time_budget = min(
             self.max_time_per_move,
-            time_left() * 0.3,  # Use max 30% of remaining time
-            time_left() / moves_remaining * 2.0  # Or 2x average time per move
+            time_left() * TIME_FRACTION_OF_REMAINING,
+            time_left() / moves_remaining * TIME_MULTIPLIER_PER_MOVE
         )
         deadline = start_time + time_budget
 
@@ -165,15 +152,25 @@ class SearchEngine:
         valid_moves = board.get_valid_moves(enemy=False)
 
         # ═══════════════════════════════════════════════════════════════
+        # CRITICAL FIX: ABSOLUTE BAN on turds for turns 0-3
+        # ═══════════════════════════════════════════════════════════════
+        if board.turn_count <= ABSOLUTE_BAN_TURD_TURNS:
+            valid_moves = [(d, t) for d, t in valid_moves if t != MoveType.TURD]
+            # If somehow ONLY turd moves exist (shouldn't happen), allow them
+            if not valid_moves:
+                valid_moves = board.get_valid_moves(enemy=False)
+
+        # ═══════════════════════════════════════════════════════════════
         # LAVA FLOOR PROTOCOL: Filter out unsafe moves (risk > 5%)
         # ═══════════════════════════════════════════════════════════════
-        safe_moves = self._filter_safe_moves(board, valid_moves, enemy=False)
+        if LAVA_FLOOR_ENABLED:
+            safe_moves = self._filter_safe_moves(board, valid_moves, enemy=False)
 
-        # Exception: If NO safe moves exist, use risky moves
-        # (Being blocked = -5 eggs, worse than trap = -4 eggs)
-        if safe_moves:
-            valid_moves = safe_moves
-        # else: keep all valid_moves (emergency fallback)
+            # Exception: If NO safe moves exist, use risky moves
+            # (Being blocked = -5 eggs, worse than trap = -4 eggs)
+            if safe_moves:
+                valid_moves = safe_moves
+            # else: keep all valid_moves (emergency fallback)
 
         # Prune loops if history provided
         if move_history:
@@ -195,8 +192,8 @@ class SearchEngine:
         self.nodes_searched = 0
         self.tt_hits = 0
 
-        # Start from depth 1, go up to depth 6 (or until time runs out)
-        for depth in range(1, 7):
+        # Start from depth 1, go up to MAX_SEARCH_DEPTH (or until time runs out)
+        for depth in range(1, MAX_SEARCH_DEPTH + 1):
             if time.time() >= deadline:
                 break
 
@@ -224,6 +221,56 @@ class SearchEngine:
                 # Negamax: opponent's score from their perspective, negated
                 score = -self._negamax(sim_board, depth - 1, -beta, -alpha,
                                       False, deadline)
+
+                # Apply move scoring heuristics from config
+                direction, move_type = move
+                current_loc = board.chicken_player.get_location()
+
+                if move_type == MoveType.EGG:
+                    if self._is_corner(current_loc):
+                        score += EGG_CORNER_BONUS
+                    else:
+                        score += EGG_REGULAR_BONUS
+
+                elif move_type == MoveType.TURD:
+                    x, y = current_loc
+                    is_separator = (x in SEPARATOR_LINES or y in SEPARATOR_LINES)
+                    turds_left = board.chicken_player.get_turds_left()
+                    turn = board.turn_count
+
+                    # Absolute ban on early turds
+                    if turn <= ABSOLUTE_BAN_TURD_TURNS:
+                        score -= TURD_ABSOLUTE_BAN_PENALTY
+
+                    elif turn < EARLY_GAME_THRESHOLD:
+                        # Early game: Very conservative
+                        if is_separator and turds_left >= EARLY_GAME_MIN_TURDS:
+                            score += TURD_EARLY_SEPARATOR_BONUS
+                        else:
+                            score -= TURD_EARLY_HEAVY_PENALTY
+
+                    elif turn < MID_GAME_THRESHOLD:
+                        # Mid game: Strategic separator use
+                        if is_separator and turds_left >= MID_GAME_MIN_TURDS:
+                            score += TURD_MID_SEPARATOR_BONUS
+                        elif turds_left <= 1:
+                            score -= TURD_MID_SAVE_LAST_PENALTY
+                        else:
+                            score -= TURD_MID_GENERAL_PENALTY
+
+                    else:
+                        # Late game: Active turd use
+                        if is_separator:
+                            score += TURD_LATE_SEPARATOR_BONUS
+                        else:
+                            score += TURD_LATE_NON_SEPARATOR_BONUS
+
+                    # Non-separator penalty
+                    if not is_separator:
+                        score -= TURD_NON_SEPARATOR_PENALTY
+
+                elif move_type == MoveType.PLAIN:
+                    score -= PLAIN_MOVE_PENALTY
 
                 if score > current_score:
                     current_score = score
@@ -267,25 +314,19 @@ class SearchEngine:
 
         # Check time
         if time.time() >= deadline:
-            # Inject position history for anti-looping evaluation
-            if hasattr(self.evaluator, 'neural_eval') and hasattr(self, 'pos_history'):
-                self.evaluator.neural_eval._current_pos_history = self.pos_history
             return self.evaluator(board, depth)
 
         # Terminal node checks
         if board.winner is not None:
             if board.winner == Result.PLAYER:
-                return 10000 - depth if is_player_turn else -10000 + depth
+                return WIN_SCORE - depth if is_player_turn else -WIN_SCORE + depth
             elif board.winner == Result.ENEMY:
-                return -10000 + depth if is_player_turn else 10000 - depth
+                return -WIN_SCORE + depth if is_player_turn else WIN_SCORE - depth
             else:  # Tie
                 return 0
 
         # Depth limit reached
         if depth == 0:
-            # Inject position history for anti-looping evaluation
-            if hasattr(self.evaluator, 'neural_eval') and hasattr(self, 'pos_history'):
-                self.evaluator.neural_eval._current_pos_history = self.pos_history
             score = self.evaluator(board, depth)
             # Negamax: negate if enemy's turn
             return score if is_player_turn else -score
@@ -300,10 +341,17 @@ class SearchEngine:
         # Get valid moves
         valid_moves = board.get_valid_moves(enemy=not is_player_turn)
 
+        # CRITICAL FIX: ABSOLUTE BAN on turds for turns 0-3
+        if board.turn_count <= ABSOLUTE_BAN_TURD_TURNS:
+            valid_moves = [(d, t) for d, t in valid_moves if t != MoveType.TURD]
+            if not valid_moves:  # Emergency fallback
+                valid_moves = board.get_valid_moves(enemy=not is_player_turn)
+
         # No moves available (blocked)
         if not valid_moves:
-            # 5 egg penalty for being blocked
-            penalty_score = -5.0 * 7.6488  # egg_diff weight
+            # Blocked penalty = -5 eggs worth of score
+            # Using average egg value (can be tuned in weights_config.py)
+            penalty_score = -BLOCKED_PENALTY_MULTIPLIER * 100.0  # Approximate egg value
             score = self.evaluator(board, depth) + penalty_score
             return score if is_player_turn else -score
 
@@ -326,6 +374,57 @@ class SearchEngine:
             score = -self._negamax(sim_board, depth - 1, -beta, -alpha,
                                   not is_player_turn, deadline)
 
+            # Apply move scoring heuristics from config
+            direction, move_type = move
+            if is_player_turn:
+                current_loc = board.chicken_player.get_location()
+
+                if move_type == MoveType.EGG:
+                    if self._is_corner(current_loc):
+                        score += EGG_CORNER_BONUS
+                    else:
+                        score += EGG_REGULAR_BONUS
+
+                elif move_type == MoveType.TURD:
+                    x, y = current_loc
+                    is_separator = (x in SEPARATOR_LINES or y in SEPARATOR_LINES)
+                    turds_left = board.chicken_player.get_turds_left()
+                    turn = board.turn_count
+
+                    # Absolute ban on early turds
+                    if turn <= ABSOLUTE_BAN_TURD_TURNS:
+                        score -= TURD_ABSOLUTE_BAN_PENALTY
+
+                    elif turn < EARLY_GAME_THRESHOLD:
+                        # Early game: Very conservative
+                        if is_separator and turds_left >= EARLY_GAME_MIN_TURDS:
+                            score += TURD_EARLY_SEPARATOR_BONUS
+                        else:
+                            score -= TURD_EARLY_HEAVY_PENALTY
+
+                    elif turn < MID_GAME_THRESHOLD:
+                        # Mid game: Strategic separator use
+                        if is_separator and turds_left >= MID_GAME_MIN_TURDS:
+                            score += TURD_MID_SEPARATOR_BONUS
+                        elif turds_left <= 1:
+                            score -= TURD_MID_SAVE_LAST_PENALTY
+                        else:
+                            score -= TURD_MID_GENERAL_PENALTY
+
+                    else:
+                        # Late game: Active turd use
+                        if is_separator:
+                            score += TURD_LATE_SEPARATOR_BONUS
+                        else:
+                            score += TURD_LATE_NON_SEPARATOR_BONUS
+
+                    # Non-separator penalty
+                    if not is_separator:
+                        score -= TURD_NON_SEPARATOR_PENALTY
+
+                elif move_type == MoveType.PLAIN:
+                    score -= PLAIN_MOVE_PENALTY
+
             if score > best_score:
                 best_score = score
                 best_move = move
@@ -343,54 +442,51 @@ class SearchEngine:
                     moves: List[Tuple[Direction, MoveType]]) -> List[Tuple[Direction, MoveType]]:
         """
         Order moves for optimal alpha-beta pruning.
-        HYBRID: Uses neural policy + heuristic ordering
+        Uses pure heuristic ordering based on move type and position.
+
+        Priority (higher priority searched first for better alpha-beta cutoffs):
+        1. Corner eggs (4 eggs!)
+        2. Separator eggs (strategic territory control)
+        3. Regular eggs
+        4. Plain moves
+        5. Strategic late-game turds
+        6. Early-game turds (strongly discouraged)
         """
-        # Try neural policy first (if available)
-        if self.neural_policy is not None and self.neural_policy.model is not None:
-            try:
-                state = self._create_board_state_for_nn(board)
-                if state is not None:
-                    probs = self.neural_policy.get_move_probs(state)
+        current_loc = board.chicken_player.get_location()
+        turn = board.turn_count
 
-                    # Combine neural probability with heuristic priority
-                    def move_score(move: Tuple[Direction, MoveType]) -> float:
-                        direction, move_type = move
-
-                        # Neural network preference (0.0-1.0)
-                        nn_score = probs[direction.value]
-
-                        # Heuristic bonuses
-                        heuristic_bonus = 0.0
-                        if move_type == MoveType.EGG:
-                            current_loc = board.chicken_player.get_location()
-                            if self._is_corner(current_loc):
-                                heuristic_bonus = 0.5  # Corner egg bonus
-                            else:
-                                heuristic_bonus = 0.2  # Regular egg bonus
-                        elif move_type == MoveType.TURD:
-                            heuristic_bonus = -0.1  # Turd penalty
-
-                        # Blend: 70% neural, 30% heuristic
-                        return nn_score + heuristic_bonus
-
-                    return sorted(moves, key=move_score, reverse=True)
-            except:
-                pass  # Fall back to heuristic ordering
-
-        # Fallback: Pure heuristic ordering
-        def move_priority(move: Tuple[Direction, MoveType]) -> int:
+        def move_priority(move: Tuple[Direction, MoveType]) -> float:
             direction, move_type = move
 
             if move_type == MoveType.EGG:
                 # Check if laying in corner (worth 4 eggs!)
-                current_loc = board.chicken_player.get_location()
                 if self._is_corner(current_loc):
-                    return -10000  # Highest priority
-                return -1000  # Regular egg
+                    priority = CORNER_EGG_PRIORITY  # Highest priority
+                else:
+                    priority = REGULAR_EGG_PRIORITY  # High priority
+
+                # Separator bonus
+                x, y = current_loc
+                if x in SEPARATOR_LINES or y in SEPARATOR_LINES:
+                    priority += SEPARATOR_EGG_BONUS  # Extra priority for separators
+
+                return priority
+
             elif move_type == MoveType.PLAIN:
-                return 0  # Neutral
+                return PLAIN_MOVE_PRIORITY  # Neutral
+
             else:  # MoveType.TURD
-                return 100  # Lowest priority
+                # Turd priority depends heavily on game phase
+                if turn <= ABSOLUTE_BAN_TURD_TURNS:
+                    return TURD_ABSOLUTE_BAN_PRIORITY  # Lowest priority (absolute ban)
+                elif turn < EARLY_GAME_THRESHOLD:
+                    return TURD_EARLY_GAME_PRIORITY  # Very low priority
+                else:
+                    # Check if separator
+                    dest_x, dest_y = loc_after_direction(current_loc, direction)
+                    if dest_x in SEPARATOR_LINES or dest_y in SEPARATOR_LINES:
+                        return TURD_SEPARATOR_PRIORITY  # Low but acceptable for separator
+                    return TURD_NON_SEPARATOR_PRIORITY  # Very low priority for non-separator
 
         return sorted(moves, key=move_priority)
 
@@ -427,60 +523,6 @@ class SearchEngine:
         x, y = loc
         return (x == 0 or x == 7) and (y == 0 or y == 7)
 
-    def _create_board_state_for_nn(self, board: "game_board.Board"):
-        """
-        Create 7x8x8 numpy array for neural network input.
-        Same format as training data.
-        """
-        try:
-            import numpy as np
-
-            state = np.zeros((7, 8, 8), dtype=np.float32)
-
-            # Channel 0: My position
-            my_pos = board.chicken_player.get_location()
-            if 0 <= my_pos[0] < 8 and 0 <= my_pos[1] < 8:
-                state[0, my_pos[1], my_pos[0]] = 1.0
-
-            # Channel 1: Enemy position
-            enemy_pos = board.chicken_enemy.get_location()
-            if 0 <= enemy_pos[0] < 8 and 0 <= enemy_pos[1] < 8:
-                state[1, enemy_pos[1], enemy_pos[0]] = 1.0
-
-            # Channel 2: Distance from my position
-            for y in range(8):
-                for x in range(8):
-                    dist = abs(x - my_pos[0]) + abs(y - my_pos[1])
-                    state[2, y, x] = 1.0 - (dist / 14.0)
-
-            # Channel 3: Corner proximity
-            corners = [(0,0), (0,7), (7,0), (7,7)]
-            for y in range(8):
-                for x in range(8):
-                    min_dist = min(abs(x-cx) + abs(y-cy) for cx, cy in corners)
-                    state[3, y, x] = 1.0 - (min_dist / 14.0)
-
-            # Channel 4: Turn number (normalized)
-            turn = board.turn_number
-            state[4, :, :] = turn / 80.0
-
-            # Channel 5: Distance from enemy
-            for y in range(8):
-                for x in range(8):
-                    dist = abs(x - enemy_pos[0]) + abs(y - enemy_pos[1])
-                    state[5, y, x] = 1.0 - (dist / 14.0)
-
-            # Channel 6: Parity mask
-            player_even = board.chicken_player.can_lay_egg_on_even()
-            for y in range(8):
-                for x in range(8):
-                    if ((x + y) % 2 == 0) == player_even:
-                        state[6, y, x] = 1.0
-
-            return state
-        except Exception as e:
-            print(f"[SearchEngine] Failed to create NN state: {e}")
-            return None
 
     def _copy_board(self, board_obj: "game_board.Board") -> "game_board.Board":
         """Deep copy board for simulation"""
@@ -599,11 +641,19 @@ class SearchEngine:
         """
         from game.enums import loc_after_direction
 
-        # Get tracker from evaluator (it's in the HybridEvaluator -> NeuralEvaluator)
+        # Try to get tracker from evaluator
+        tracker = None
         try:
-            tracker = self.evaluator.neural_eval.tracker
-        except AttributeError:
-            # Fallback: if no tracker available, return all moves
+            # Try different possible locations for tracker
+            if hasattr(self.evaluator, 'tracker'):
+                tracker = self.evaluator.tracker
+            elif hasattr(self.evaluator, 'neural_eval') and hasattr(self.evaluator.neural_eval, 'tracker'):
+                tracker = self.evaluator.neural_eval.tracker
+        except:
+            pass
+
+        # If no tracker available, return all moves (safety check disabled)
+        if tracker is None:
             return valid_moves
 
         # Get current position
@@ -622,4 +672,3 @@ class SearchEngine:
                 safe_moves.append((direction, move_type))
 
         return safe_moves
-

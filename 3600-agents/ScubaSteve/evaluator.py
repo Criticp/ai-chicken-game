@@ -171,6 +171,10 @@ class NeuralEvaluator:
         # Enhanced fallback weights (Defense & Zoning + DeepChicken + PROJECT VANGUARD)
         self.fallback_weights = {
             'egg_diff': 7.6488,
+
+            # EGG-LAYING INCENTIVE: Bonus for the ACT of laying an egg (not just having more)
+            'egg_placement_bonus': 15.0,  # NEW: Immediate reward for laying egg THIS TURN
+
             'mobility': 0.1693,
             'corner_proximity': 2.5,
             'turd_diff': 0.3354,
@@ -210,6 +214,13 @@ class NeuralEvaluator:
             # TURD CONSERVATION: Penalty for using turds (makes search prefer eggs/plains)
             'turd_usage_penalty': -200.0,  # NEW: Heavy penalty for each turd used
             'early_turd_penalty': -500.0,  # NEW: Extra penalty for early turds (turns 1-20)
+
+            # V6 ENHANCEMENTS: Strategic separator walls and exploration
+            'parity_turd_bonus': 15.0,        # Bonus per blocked opponent egg
+            'separator_wall_progress': 20.0,  # Wall completion incentive
+            'exploration_freshness': 10.0,    # New territory bonus
+            'backtrack_penalty': -25.0,       # Revisiting egged cells
+            'wall_synergy_bonus': 50.0,       # Both walls active
 
             'intercept': -0.0055,
         }
