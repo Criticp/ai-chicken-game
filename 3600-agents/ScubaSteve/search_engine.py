@@ -183,10 +183,10 @@ class SearchEngine:
             # Fallback
             valid_moves = board.get_valid_moves(enemy=False)
             if not valid_moves:
-                return (Direction.UP, MoveType.PLAIN), {}
+                return (Direction.UP, MoveType.PLAIN)
 
         if len(valid_moves) == 1:
-            return valid_moves[0], {}
+            return valid_moves[0]
 
         # Iterative deepening
         best_move = valid_moves[0]
@@ -225,44 +225,6 @@ class SearchEngine:
                 score = -self._negamax(sim_board, depth - 1, -beta, -alpha,
                                       False, deadline)
 
-                # STRATEGIC FIX: Turd rationing + context-aware bonuses
-                direction, move_type = move
-                current_loc = board.chicken_player.get_location()
-
-                if move_type == MoveType.EGG:
-                    # Egg bonuses - strong but not overwhelming
-                    if self._is_corner(current_loc):
-                        score += 400.0  # Corner bonus
-                    else:
-                        score += 250.0  # Regular egg
-
-                elif move_type == MoveType.TURD:
-                    x, y = current_loc
-                    is_separator = (x == 2 or x == 5 or y == 2 or y == 5)
-                    turds_left = board.chicken_player.get_turds_left()
-
-                    if is_separator:
-                        # STRATEGIC RATIONING: Only allow turds if we have enough left
-                        # Key insight: Save at least 2 turds for turns 20+
-                        if board.turn_count < 20 and turds_left <= 2:
-                            # RATION: Don't use last 2 turds before turn 20!
-                            score -= 500.0
-                        elif board.turn_count < 10 and turds_left <= 4:
-                            # Use max 1 turd in first 10 turns
-                            score -= 300.0
-                        elif board.turn_count >= 20:
-                            # Late game: turds are valuable
-                            score += 300.0
-                        else:
-                            # Mid game: moderate use
-                            score += 100.0
-                    else:
-                        score -= 200.0  # Non-separator turds discouraged
-
-                elif move_type == MoveType.PLAIN:
-                    # Plain penalty - but not death sentence
-                    score -= 150.0
-
                 if score > current_score:
                     current_score = score
                     current_best = move
@@ -283,14 +245,7 @@ class SearchEngine:
         print(f"[SearchEngine] Depth={self.max_depth_reached} Nodes={self.nodes_searched} "
               f"TT_hits={self.tt_hits} Time={elapsed:.3f}s")
 
-        eval_details = {
-            'score': best_score,
-            'depth': self.max_depth_reached,
-            'nodes': self.nodes_searched,
-            'tt_hits': self.tt_hits,
-        }
-
-        return best_move, eval_details
+        return best_move
 
     def _negamax(self, board: "game_board.Board", depth: int, alpha: float, beta: float,
                  is_player_turn: bool, deadline: float) -> float:
@@ -371,45 +326,6 @@ class SearchEngine:
             score = -self._negamax(sim_board, depth - 1, -beta, -alpha,
                                   not is_player_turn, deadline)
 
-            # STRATEGIC FIX: Turd rationing + context-aware bonuses
-            direction, move_type = move
-            if is_player_turn:
-                current_loc = board.chicken_player.get_location()
-
-                if move_type == MoveType.EGG:
-                    # Egg bonuses - strong but not overwhelming
-                    if self._is_corner(current_loc):
-                        score += 400.0  # Corner bonus
-                    else:
-                        score += 250.0  # Regular egg
-
-                elif move_type == MoveType.TURD:
-                    x, y = current_loc
-                    is_separator = (x == 2 or x == 5 or y == 2 or y == 5)
-                    turds_left = board.chicken_player.get_turds_left()
-
-                    if is_separator:
-                        # STRATEGIC RATIONING: Only allow turds if we have enough left
-                        # Key insight: Save at least 2 turds for turns 20+
-                        if board.turn_count < 20 and turds_left <= 2:
-                            # RATION: Don't use last 2 turds before turn 20!
-                            score -= 500.0
-                        elif board.turn_count < 10 and turds_left <= 4:
-                            # Use max 1 turd in first 10 turns
-                            score -= 300.0
-                        elif board.turn_count >= 20:
-                            # Late game: turds are valuable
-                            score += 300.0
-                        else:
-                            # Mid game: moderate use
-                            score += 100.0
-                    else:
-                        score -= 200.0  # Non-separator turds discouraged
-
-                elif move_type == MoveType.PLAIN:
-                    # Plain penalty - but not death sentence
-                    score -= 150.0
-
             if score > best_score:
                 best_score = score
                 best_move = move
@@ -448,11 +364,11 @@ class SearchEngine:
                         if move_type == MoveType.EGG:
                             current_loc = board.chicken_player.get_location()
                             if self._is_corner(current_loc):
-                                heuristic_bonus = 25.0  # Corner egg bonus (INCREASED from 0.5)
+                                heuristic_bonus = 0.5  # Corner egg bonus
                             else:
-                                heuristic_bonus = 15.0  # Regular egg bonus (INCREASED from 0.2)
+                                heuristic_bonus = 0.2  # Regular egg bonus
                         elif move_type == MoveType.TURD:
-                            heuristic_bonus = -5.0  # Turd penalty (INCREASED from -0.1)
+                            heuristic_bonus = -0.1  # Turd penalty
 
                         # Blend: 70% neural, 30% heuristic
                         return nn_score + heuristic_bonus
@@ -706,3 +622,4 @@ class SearchEngine:
                 safe_moves.append((direction, move_type))
 
         return safe_moves
+
